@@ -213,7 +213,9 @@ find names inside collapsed containers ("+N hidden"). `?budget=N` (or `?budget=N
 viewer URL changes the limits.
 
 Views with more than about three edges per node draw their edges faint until you select a
-node, which then lights its own. Large layouts drop to faster ELK settings automatically
+node, which then lights its own. If your own expanding takes the view past about 800 visible
+nodes the status bar says so and offers **collapse to fit**, which re-applies the budget —
+the viewer warns rather than undoing the click you just made. Large layouts drop to faster ELK settings automatically
 and say so in the status bar; a collapse/expand in an expensive view relays out only that
 subtree ("approximate layout · tidy" — *tidy* runs a full pass).
 

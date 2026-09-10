@@ -24,6 +24,17 @@ export interface BudgetOptions {
 /** Measured 2026-09-05: about 1 s of ELK for ~600 visible nodes/edges with cross-container edges. */
 export const DEFAULT_BUDGET: BudgetOptions = { maxVisible: 600, maxEdges: 800 };
 
+/**
+ * Above this many VISIBLE nodes the viewer says so and offers to collapse back.
+ *
+ * PROJECT_SPEC §3(C)/N4 asked for a hard cap that force-collapses instead of
+ * rendering. The budget already does that for a graph as it ARRIVES; the gap this
+ * fills is a user expanding their way past it afterwards. Forcing a collapse there
+ * would undo the click the user just made, so this warns and offers the action
+ * instead — the spec's protection, without fighting the person using it.
+ */
+export const RENDER_WARN = 800;
+
 export interface BudgetResult {
   /** Container ids to collapse (in the order they were chosen). */
   collapse: string[];

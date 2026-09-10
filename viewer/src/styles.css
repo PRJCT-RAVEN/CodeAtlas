@@ -596,3 +596,24 @@ body,
   color: var(--ink-3);
   word-break: break-all;
 }
+
+/* over-budget guard: visible node count above RENDER_WARN (spec §3(C)/N4) */
+.status .over-budget {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--delta-modified); /* the amber already used for 'changed' */
+}
+.status .over-budget button {
+  font: inherit;
+  font-size: 10px;
+  color: var(--ink-2);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.status .over-budget button:hover {
+  background: var(--panel-3);
+}

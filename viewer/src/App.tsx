@@ -22,7 +22,7 @@ import { isEmptyDelta } from "./ir/delta";
 import { ElkEdge, type ElkEdgeType } from "./edges/ElkEdge";
 import { useAtlas } from "./store";
 import { THEMES, SLOT_COUNT, applyTheme, initialTheme, rememberTheme, type Theme, type ThemeName } from "./theme";
-import { parseBudget } from "./ir/budget";
+import { parseBudget, RENDER_WARN } from "./ir/budget";
 import "./styles.css";
 
 // --- visual language ---------------------------------------------------------
@@ -331,7 +331,7 @@ function savePositions(root: string, m: Map<string, Point>) {
 // --- app ---------------------------------------------------------------------
 
 export default function App() {
-  const { ir, delta, collapsed, selected, status, budget, budgetInfo, lastToggle, setBudget, setIR, setPollError, toggleCollapse, select } = useAtlas();
+  const { ir, delta, collapsed, selected, status, budget, budgetInfo, lastToggle, setBudget, setIR, setPollError, toggleCollapse, collapseToFit, select } = useAtlas();
   const [nodes, setNodes] = useState<AtlasNode[]>([]);
   const [edges, setEdges] = useState<ElkEdgeType[]>([]);
   const [layingOut, setLayingOut] = useState(false);
@@ -768,6 +768,15 @@ export default function App() {
           <span>waiting for {pollSources(window.location.search)[0]}…</span>
         )}
         {ir && <span>{ir.nodes.length} nodes · {ir.edges.length} edges</span>}
+        {nodes.length > RENDER_WARN && (
+          <span
+            className="over-budget"
+            title={`${nodes.length} nodes are on screen. Above about ${RENDER_WARN} the layout drops to a faster, rougher tier and panning slows down. "Collapse to fit" re-applies the visibility budget (${budget.maxVisible} nodes / ${budget.maxEdges} edges — change with ?budget=N,E).`}
+          >
+            ⚠ {nodes.length} visible
+            <button onClick={collapseToFit}>collapse to fit</button>
+          </span>
+        )}
         {budgetInfo && budgetInfo.autoCollapsed > 0 && (
           <span title={`visible ${budgetInfo.visible} of ${budgetInfo.total} · ${budgetInfo.edges} edges drawn · budget ${budget.maxVisible} nodes / ${budget.maxEdges} edges (?budget=N,E)`}>
             {budgetInfo.autoCollapsed} auto-collapsed · showing {nodes.length}/{budgetInfo.total}

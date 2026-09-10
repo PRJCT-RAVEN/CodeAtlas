@@ -175,6 +175,11 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   details panel lists the selected node's edges with counts instead). Containers with > 12 visible
   children use MIN_WIDTH layering (bound ≈ 0.95·√k), so 200 tables are a block, not a
   30,000 px row. `LayoutResult.mode` reports tier/dense/heavy.
+- **Render guard**: above 800 VISIBLE nodes the status bar warns and offers "collapse to
+  fit", which re-applies the budget to the current view (targeting the smaller of the
+  budget and the guard, so it still helps when `?budget=` was raised). The automatic pass
+  never revisits a container the user opened — undoing their click would be hostile — so
+  this is the on-demand form of PROJECT_SPEC §3(C)/N4's forced-collapse cap.
 - **Polling** is conditional (ETag → 304; `/live` cap 256 MB): an unchanged 25 MB graph
   costs one 304 per second. **Search** counts matches inside collapsed containers ("+N
   hidden") and keeps their container lit. Above 800 visible nodes node shadows are dropped

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { GraphIR } from "./ir/types";
 import { diffIR, EMPTY_DELTA, type Delta } from "./ir/delta";
-import { autoCollapse, DEFAULT_BUDGET, type BudgetOptions } from "./ir/budget";
+import { autoCollapse, DEFAULT_BUDGET, RENDER_WARN, type BudgetOptions } from "./ir/budget";
 
 export interface BudgetInfo {
   /** Containers currently collapsed by the budget (not by the author or the user). */
@@ -35,6 +35,8 @@ interface AtlasState {
   setIR: (ir: GraphIR, source: string) => void;
   setPollError: (error: string | null) => void;
   toggleCollapse: (id: string) => void;
+  /** Re-apply the visibility budget to the CURRENT view (an explicit user request). */
+  collapseToFit: () => void;
   select: (id: string | null) => void;
 }
 
@@ -110,6 +112,30 @@ export const useAtlas = create<AtlasState>((set) => ({
       };
     }),
   setPollError: (error) => set((s) => ({ status: { ...s.status, error } })),
+  collapseToFit: () =>
+    set((s) => {
+      if (!s.ir) return {};
+      // Nothing is excluded: unlike the automatic pass, this MAY collapse containers
+      // the user opened — that is what "fit" means, and they asked for it.
+      // Target the SMALLER of the budget and the render guard: someone who raised
+      // ?budget= past the guard still gets a fast view when they click the button,
+      // instead of it appearing to do nothing.
+      const target = { maxVisible: Math.min(s.budget.maxVisible, RENDER_WARN), maxEdges: s.budget.maxEdges };
+      const r = autoCollapse(s.ir, s.collapsed, target, new Set(), new Set());
+      const collapsed = new Set(s.collapsed);
+      for (const id of r.collapse) {
+        collapsed.add(id);
+        defaulted.add(id);
+        autoChosen.add(id);
+      }
+      let autoCollapsed = 0;
+      for (const id of autoChosen) if (collapsed.has(id)) autoCollapsed++;
+      return {
+        collapsed,
+        budgetInfo: { autoCollapsed, total: r.total, visible: r.visible, edges: r.edges },
+        lastToggle: null, // a multi-container change: the incremental path does not apply
+      };
+    }),
   toggleCollapse: (id) =>
     set((s) => {
       const collapsed = new Set(s.collapsed);

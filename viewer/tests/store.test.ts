@@ -2,6 +2,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useAtlas } from "../src/store";
 import { db } from "./budget.test";
+import { autoCollapse, DEFAULT_BUDGET, RENDER_WARN } from "../src/ir/budget";
+import type { GraphIR } from "../src/ir/types";
+
+/** Visible display nodes under a collapsed set — autoCollapse reports it for us. */
+const countVisible = (g: GraphIR, collapsed: ReadonlySet<string>) =>
+  autoCollapse(g, collapsed, { maxVisible: Number.MAX_SAFE_INTEGER, maxEdges: Number.MAX_SAFE_INTEGER }).visible;
 
 const s = () => useAtlas.getState();
 
@@ -60,4 +66,45 @@ describe("store across polls", () => {
     s().setIR({ ...g }, "t");
     expect(s().lastToggle).toBeNull();
   });
+});
+
+// PROJECT_SPEC §3(C)/N4 wanted a hard cap that force-collapses. The budget does that
+// for a graph as it ARRIVES; a user can still expand past it afterwards, and undoing
+// the click they just made would be hostile — so the viewer warns and offers this.
+describe("collapseToFit", () => {
+  it("brings an over-expanded view back under the budget, including containers the user opened", () => {
+    const g = db(4, 30, 4); // schemas × tables × columns
+    useAtlas.setState({ ir: null, collapsed: new Set(), budget: DEFAULT_BUDGET, budgetInfo: null });
+    useAtlas.getState().setIR(g, "test");
+    // the user opens everything: the automatic pass never revisits their choices
+    useAtlas.setState({ collapsed: new Set() });
+    const wideOpen = countVisible(g, useAtlas.getState().collapsed);
+    expect(wideOpen).toBeGreaterThan(DEFAULT_BUDGET.maxVisible);
+
+    useAtlas.getState().collapseToFit();
+    const after = countVisible(g, useAtlas.getState().collapsed);
+    expect(after).toBeLessThanOrEqual(Math.min(DEFAULT_BUDGET.maxVisible, RENDER_WARN));
+    expect(after).toBeLessThan(wideOpen);
+    expect(useAtlas.getState().budgetInfo?.visible).toBe(after);
+    // a multi-container change must not be treated as one incremental toggle
+    expect(useAtlas.getState().lastToggle).toBeNull();
+  });
+
+  it("is a no-op with no graph loaded", () => {
+    useAtlas.setState({ ir: null, collapsed: new Set() });
+    expect(() => useAtlas.getState().collapseToFit()).not.toThrow();
+  });
+});
+
+it("collapseToFit still reduces when the user raised ?budget= past the render guard", () => {
+  const g = db(4, 50, 4); // 4 + 200 + 800 = 1004 display nodes wide open: past the 800 guard
+  useAtlas.setState({ ir: null, collapsed: new Set(), budget: { maxVisible: 4000, maxEdges: 6000 }, budgetInfo: null });
+  useAtlas.getState().setIR(g, "test");
+  useAtlas.setState({ collapsed: new Set() }); // the user opened everything
+  const before = countVisible(g, useAtlas.getState().collapsed);
+  expect(before).toBeGreaterThan(RENDER_WARN);
+  useAtlas.getState().collapseToFit();
+  const after = countVisible(g, useAtlas.getState().collapsed);
+  expect(after, "the button must do something even with a raised budget").toBeLessThan(before);
+  expect(after).toBeLessThanOrEqual(RENDER_WARN);
 });
