@@ -1,0 +1,130 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  viewer:
+    name: viewer (vitest, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: viewer
+      - run: npm test
+        working-directory: viewer
+      - name: Typecheck and production build
+        run: npm run build
+        working-directory: viewer
+
+  tools:
+    name: tools (node --test, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The tools suite reaches outside tools/: fs2ir and schema2ir shell out to
+      # schema/validate.mjs (which imports ajv), and the launcher test starts the real
+      # viewer (which needs vite). Install both here. The launcher used to install them
+      # itself on the first `start`, which raced the other test files and lost; the test
+      # now asserts they are present instead of creating them.
+      - run: npm ci
+        working-directory: viewer
+      - run: npm ci
+        working-directory: schema
+      - run: npm ci
+        working-directory: tools
+      - run: npm test
+        working-directory: tools
+      # A suite that ran ZERO tests exits 0 — exactly what the old single-quoted glob
+      # did under cmd.exe. Nothing else would catch it.
+      - name: the tools suite actually ran tests
+        shell: pwsh
+        working-directory: tools
+        run: |
+          $out = (npm test 2>&1 | Out-String)
+          if ($out -match "# tests 0\b") { throw "the tools suite ran ZERO tests" }
+          if ($out -notmatch "# fail 0") { throw "the tools suite reported failures" }
+
+  schema:
+    name: schema (validator tests, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: schema
+      - run: npm test
+        working-directory: schema
+      # A suite that ran ZERO tests exits 0 — exactly what the old single-quoted glob
+      # did under cmd.exe. Nothing else would catch it.
+      - name: the schema suite actually ran tests
+        shell: pwsh
+        working-directory: schema
+        run: |
+          $out = (npm test 2>&1 | Out-String)
+          if ($out -match "# tests 0\b") { throw "the schema suite ran ZERO tests" }
+          if ($out -notmatch "# fail 0") { throw "the schema suite reported failures" }
+
+  package:
+    name: package (shipped artifacts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: schema
+      - name: Every shipped graph validates
+        run: node schema/validate.mjs viewer/public/sample-graph.json docs/examples/*.graph.json
+      - name: No personal paths in shipped files
+        run: |
+          if git ls-files | xargs grep -l '/Users/[a-z]' 2>/dev/null; then
+            echo "::error::a shipped file contains an absolute personal path"; exit 1
+          fi
+      - name: Launcher shims are executable and LF where they must be
+        run: |
+          test -x bin/codeatlas-viewer || { echo "::error::bin/codeatlas-viewer is not executable"; exit 1; }
+          file bin/codeatlas-viewer | grep -q CRLF && { echo "::error::POSIX shim has CRLF line endings"; exit 1; }
+          node bin/codeatlas-viewer.mjs paths > /dev/null
+
+  windows-shim:
+    name: windows (.cmd shim + line endings)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Shims survived the checkout with the right line endings
+        shell: pwsh
+        run: |
+          $sh = [IO.File]::ReadAllText("bin/codeatlas-viewer")
+          if ($sh.Contains("`r`n")) { throw "bin/codeatlas-viewer must be LF (see .gitattributes)" }
+          $cmd = [IO.File]::ReadAllText("bin/codeatlas-viewer.cmd")
+          if (-not $cmd.Contains("`r`n")) { throw "bin/codeatlas-viewer.cmd must be CRLF" }
+      - name: the .cmd shim runs
+        shell: cmd
+        run: bin\codeatlas-viewer.cmd paths

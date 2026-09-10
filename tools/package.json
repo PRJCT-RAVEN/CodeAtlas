@@ -1,0 +1,14 @@
+{
+  "name": "@codeatlas/tools",
+  "private": true,
+  "type": "module",
+  "description": "Repo utilities: fs2ir.mjs (directory \u2192 IR, no deps), irdiff.mjs (diff two IR files, no deps), shot.mjs (Playwright headless screenshots of the viewer), serve.sh + launchd/ (always-on viewer). `npm install` here only \u2014 Playwright stays out of viewer/.",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "shot": "node shot.mjs",
+    "irdiff": "node irdiff.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

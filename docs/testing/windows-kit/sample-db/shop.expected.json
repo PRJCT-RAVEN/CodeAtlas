@@ -1,0 +1,803 @@
+{
+  "irVersion": "0.2",
+  "generator": {
+    "tool": "schema2ir",
+    "version": "0.1",
+    "commit": null
+  },
+  "title": "Schema of shop",
+  "description": "7 tables, 27 columns, 7 foreign-key links (sqlite)",
+  "root": "db:shop",
+  "nodes": [
+    {
+      "id": "column:addresses.city",
+      "kind": "column",
+      "name": "city",
+      "parent": "table:addresses",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:addresses.country",
+      "kind": "column",
+      "name": "country",
+      "parent": "table:addresses",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:addresses.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:addresses",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:addresses.line1",
+      "kind": "column",
+      "name": "line1",
+      "parent": "table:addresses",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:addresses.user_id",
+      "kind": "column",
+      "name": "user_id",
+      "parent": "table:addresses",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:categories.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:categories",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:categories.name",
+      "kind": "column",
+      "name": "name",
+      "parent": "table:categories",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:order_items.order_id",
+      "kind": "column",
+      "name": "order_id",
+      "parent": "table:order_items",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:order_items.product_id",
+      "kind": "column",
+      "name": "product_id",
+      "parent": "table:order_items",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:order_items.qty",
+      "kind": "column",
+      "name": "qty",
+      "parent": "table:order_items",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:orders.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:orders",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:orders.placed_at",
+      "kind": "column",
+      "name": "placed_at",
+      "parent": "table:orders",
+      "attrs": {
+        "type": "REAL"
+      }
+    },
+    {
+      "id": "column:orders.ship_to",
+      "kind": "column",
+      "name": "ship_to",
+      "parent": "table:orders",
+      "attrs": {
+        "type": "INTEGER"
+      }
+    },
+    {
+      "id": "column:orders.status",
+      "kind": "column",
+      "name": "status",
+      "parent": "table:orders",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'pending'"
+      }
+    },
+    {
+      "id": "column:orders.user_id",
+      "kind": "column",
+      "name": "user_id",
+      "parent": "table:orders",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:payments.amount_cents",
+      "kind": "column",
+      "name": "amount_cents",
+      "parent": "table:payments",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:payments.captured",
+      "kind": "column",
+      "name": "captured",
+      "parent": "table:payments",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "0"
+      }
+    },
+    {
+      "id": "column:payments.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:payments",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:payments.order_id",
+      "kind": "column",
+      "name": "order_id",
+      "parent": "table:payments",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:products.category_id",
+      "kind": "column",
+      "name": "category_id",
+      "parent": "table:products",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:products.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:products",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:products.name",
+      "kind": "column",
+      "name": "name",
+      "parent": "table:products",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:products.price_cents",
+      "kind": "column",
+      "name": "price_cents",
+      "parent": "table:products",
+      "attrs": {
+        "type": "INTEGER",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:products.sku",
+      "kind": "column",
+      "name": "sku",
+      "parent": "table:products",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:users.created_at",
+      "kind": "column",
+      "name": "created_at",
+      "parent": "table:users",
+      "attrs": {
+        "type": "REAL",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:users.email",
+      "kind": "column",
+      "name": "email",
+      "parent": "table:users",
+      "attrs": {
+        "type": "TEXT",
+        "nullable": false
+      }
+    },
+    {
+      "id": "column:users.id",
+      "kind": "column",
+      "name": "id",
+      "parent": "table:users",
+      "attrs": {
+        "type": "INTEGER",
+        "primaryKey": true,
+        "nullable": false
+      }
+    },
+    {
+      "id": "db:shop",
+      "kind": "database",
+      "name": "shop",
+      "attrs": {
+        "dialect": "sqlite"
+      }
+    },
+    {
+      "id": "index:categories.sqlite_autoindex_categories_1",
+      "kind": "index",
+      "name": "sqlite_autoindex_categories_1",
+      "parent": "table:categories",
+      "attrs": {
+        "unique": true,
+        "columns": "name"
+      }
+    },
+    {
+      "id": "index:order_items.idx_items_product",
+      "kind": "index",
+      "name": "idx_items_product",
+      "parent": "table:order_items",
+      "attrs": {
+        "unique": false,
+        "columns": "product_id"
+      }
+    },
+    {
+      "id": "index:order_items.sqlite_autoindex_order_items_1",
+      "kind": "index",
+      "name": "sqlite_autoindex_order_items_1",
+      "parent": "table:order_items",
+      "attrs": {
+        "unique": true,
+        "columns": "order_id,product_id"
+      }
+    },
+    {
+      "id": "index:orders.idx_orders_user",
+      "kind": "index",
+      "name": "idx_orders_user",
+      "parent": "table:orders",
+      "attrs": {
+        "unique": false,
+        "columns": "user_id"
+      }
+    },
+    {
+      "id": "index:products.sqlite_autoindex_products_1",
+      "kind": "index",
+      "name": "sqlite_autoindex_products_1",
+      "parent": "table:products",
+      "attrs": {
+        "unique": true,
+        "columns": "sku"
+      }
+    },
+    {
+      "id": "index:users.sqlite_autoindex_users_1",
+      "kind": "index",
+      "name": "sqlite_autoindex_users_1",
+      "parent": "table:users",
+      "attrs": {
+        "unique": true,
+        "columns": "email"
+      }
+    },
+    {
+      "id": "table:addresses",
+      "kind": "table",
+      "name": "addresses",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 5,
+        "foreignKeys": 1
+      }
+    },
+    {
+      "id": "table:categories",
+      "kind": "table",
+      "name": "categories",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 2,
+        "foreignKeys": 0
+      }
+    },
+    {
+      "id": "table:order_items",
+      "kind": "table",
+      "name": "order_items",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 3,
+        "foreignKeys": 2
+      }
+    },
+    {
+      "id": "table:orders",
+      "kind": "table",
+      "name": "orders",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 5,
+        "foreignKeys": 2
+      }
+    },
+    {
+      "id": "table:payments",
+      "kind": "table",
+      "name": "payments",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 4,
+        "foreignKeys": 1
+      }
+    },
+    {
+      "id": "table:products",
+      "kind": "table",
+      "name": "products",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 5,
+        "foreignKeys": 1
+      }
+    },
+    {
+      "id": "table:users",
+      "kind": "table",
+      "name": "users",
+      "parent": "db:shop",
+      "metrics": {
+        "columns": 3,
+        "foreignKeys": 0
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e:contains:db:shop->table:addresses",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:addresses"
+    },
+    {
+      "id": "e:contains:db:shop->table:categories",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:categories"
+    },
+    {
+      "id": "e:contains:db:shop->table:order_items",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:order_items"
+    },
+    {
+      "id": "e:contains:db:shop->table:orders",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:orders"
+    },
+    {
+      "id": "e:contains:db:shop->table:payments",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:payments"
+    },
+    {
+      "id": "e:contains:db:shop->table:products",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:products"
+    },
+    {
+      "id": "e:contains:db:shop->table:users",
+      "kind": "contains",
+      "from": "db:shop",
+      "to": "table:users"
+    },
+    {
+      "id": "e:contains:table:addresses->column:addresses.city",
+      "kind": "contains",
+      "from": "table:addresses",
+      "to": "column:addresses.city"
+    },
+    {
+      "id": "e:contains:table:addresses->column:addresses.country",
+      "kind": "contains",
+      "from": "table:addresses",
+      "to": "column:addresses.country"
+    },
+    {
+      "id": "e:contains:table:addresses->column:addresses.id",
+      "kind": "contains",
+      "from": "table:addresses",
+      "to": "column:addresses.id"
+    },
+    {
+      "id": "e:contains:table:addresses->column:addresses.line1",
+      "kind": "contains",
+      "from": "table:addresses",
+      "to": "column:addresses.line1"
+    },
+    {
+      "id": "e:contains:table:addresses->column:addresses.user_id",
+      "kind": "contains",
+      "from": "table:addresses",
+      "to": "column:addresses.user_id"
+    },
+    {
+      "id": "e:contains:table:categories->column:categories.id",
+      "kind": "contains",
+      "from": "table:categories",
+      "to": "column:categories.id"
+    },
+    {
+      "id": "e:contains:table:categories->column:categories.name",
+      "kind": "contains",
+      "from": "table:categories",
+      "to": "column:categories.name"
+    },
+    {
+      "id": "e:contains:table:categories->index:categories.sqlite_autoindex_categories_1",
+      "kind": "contains",
+      "from": "table:categories",
+      "to": "index:categories.sqlite_autoindex_categories_1"
+    },
+    {
+      "id": "e:contains:table:order_items->column:order_items.order_id",
+      "kind": "contains",
+      "from": "table:order_items",
+      "to": "column:order_items.order_id"
+    },
+    {
+      "id": "e:contains:table:order_items->column:order_items.product_id",
+      "kind": "contains",
+      "from": "table:order_items",
+      "to": "column:order_items.product_id"
+    },
+    {
+      "id": "e:contains:table:order_items->column:order_items.qty",
+      "kind": "contains",
+      "from": "table:order_items",
+      "to": "column:order_items.qty"
+    },
+    {
+      "id": "e:contains:table:order_items->index:order_items.idx_items_product",
+      "kind": "contains",
+      "from": "table:order_items",
+      "to": "index:order_items.idx_items_product"
+    },
+    {
+      "id": "e:contains:table:order_items->index:order_items.sqlite_autoindex_order_items_1",
+      "kind": "contains",
+      "from": "table:order_items",
+      "to": "index:order_items.sqlite_autoindex_order_items_1"
+    },
+    {
+      "id": "e:contains:table:orders->column:orders.id",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "column:orders.id"
+    },
+    {
+      "id": "e:contains:table:orders->column:orders.placed_at",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "column:orders.placed_at"
+    },
+    {
+      "id": "e:contains:table:orders->column:orders.ship_to",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "column:orders.ship_to"
+    },
+    {
+      "id": "e:contains:table:orders->column:orders.status",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "column:orders.status"
+    },
+    {
+      "id": "e:contains:table:orders->column:orders.user_id",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "column:orders.user_id"
+    },
+    {
+      "id": "e:contains:table:orders->index:orders.idx_orders_user",
+      "kind": "contains",
+      "from": "table:orders",
+      "to": "index:orders.idx_orders_user"
+    },
+    {
+      "id": "e:contains:table:payments->column:payments.amount_cents",
+      "kind": "contains",
+      "from": "table:payments",
+      "to": "column:payments.amount_cents"
+    },
+    {
+      "id": "e:contains:table:payments->column:payments.captured",
+      "kind": "contains",
+      "from": "table:payments",
+      "to": "column:payments.captured"
+    },
+    {
+      "id": "e:contains:table:payments->column:payments.id",
+      "kind": "contains",
+      "from": "table:payments",
+      "to": "column:payments.id"
+    },
+    {
+      "id": "e:contains:table:payments->column:payments.order_id",
+      "kind": "contains",
+      "from": "table:payments",
+      "to": "column:payments.order_id"
+    },
+    {
+      "id": "e:contains:table:products->column:products.category_id",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "column:products.category_id"
+    },
+    {
+      "id": "e:contains:table:products->column:products.id",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "column:products.id"
+    },
+    {
+      "id": "e:contains:table:products->column:products.name",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "column:products.name"
+    },
+    {
+      "id": "e:contains:table:products->column:products.price_cents",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "column:products.price_cents"
+    },
+    {
+      "id": "e:contains:table:products->column:products.sku",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "column:products.sku"
+    },
+    {
+      "id": "e:contains:table:products->index:products.sqlite_autoindex_products_1",
+      "kind": "contains",
+      "from": "table:products",
+      "to": "index:products.sqlite_autoindex_products_1"
+    },
+    {
+      "id": "e:contains:table:users->column:users.created_at",
+      "kind": "contains",
+      "from": "table:users",
+      "to": "column:users.created_at"
+    },
+    {
+      "id": "e:contains:table:users->column:users.email",
+      "kind": "contains",
+      "from": "table:users",
+      "to": "column:users.email"
+    },
+    {
+      "id": "e:contains:table:users->column:users.id",
+      "kind": "contains",
+      "from": "table:users",
+      "to": "column:users.id"
+    },
+    {
+      "id": "e:contains:table:users->index:users.sqlite_autoindex_users_1",
+      "kind": "contains",
+      "from": "table:users",
+      "to": "index:users.sqlite_autoindex_users_1"
+    },
+    {
+      "id": "e:references:column:addresses.user_id->column:users.id",
+      "kind": "references",
+      "from": "column:addresses.user_id",
+      "to": "column:users.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:order_items.order_id->column:orders.id",
+      "kind": "references",
+      "from": "column:order_items.order_id",
+      "to": "column:orders.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:order_items.product_id->column:products.id",
+      "kind": "references",
+      "from": "column:order_items.product_id",
+      "to": "column:products.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:orders.ship_to->column:addresses.id",
+      "kind": "references",
+      "from": "column:orders.ship_to",
+      "to": "column:addresses.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:orders.user_id->column:users.id",
+      "kind": "references",
+      "from": "column:orders.user_id",
+      "to": "column:users.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:payments.order_id->column:orders.id",
+      "kind": "references",
+      "from": "column:payments.order_id",
+      "to": "column:orders.id",
+      "count": 1
+    },
+    {
+      "id": "e:references:column:products.category_id->column:categories.id",
+      "kind": "references",
+      "from": "column:products.category_id",
+      "to": "column:categories.id",
+      "count": 1
+    }
+  ],
+  "annotations": {
+    "column:addresses.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:addresses.user_id": {
+      "summary": "INTEGER, not null"
+    },
+    "column:addresses.line1": {
+      "summary": "TEXT, not null"
+    },
+    "column:addresses.city": {
+      "summary": "TEXT, not null"
+    },
+    "column:addresses.country": {
+      "summary": "TEXT, not null"
+    },
+    "column:categories.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:categories.name": {
+      "summary": "TEXT, not null"
+    },
+    "column:order_items.order_id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:order_items.product_id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:order_items.qty": {
+      "summary": "INTEGER, not null"
+    },
+    "column:orders.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:orders.user_id": {
+      "summary": "INTEGER, not null"
+    },
+    "column:orders.ship_to": {
+      "summary": "INTEGER"
+    },
+    "column:orders.status": {
+      "summary": "TEXT, not null"
+    },
+    "column:orders.placed_at": {
+      "summary": "REAL"
+    },
+    "column:payments.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:payments.order_id": {
+      "summary": "INTEGER, not null"
+    },
+    "column:payments.amount_cents": {
+      "summary": "INTEGER, not null"
+    },
+    "column:payments.captured": {
+      "summary": "INTEGER, not null"
+    },
+    "column:products.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:products.category_id": {
+      "summary": "INTEGER, not null"
+    },
+    "column:products.sku": {
+      "summary": "TEXT, not null"
+    },
+    "column:products.name": {
+      "summary": "TEXT, not null"
+    },
+    "column:products.price_cents": {
+      "summary": "INTEGER, not null"
+    },
+    "column:users.id": {
+      "summary": "INTEGER, primary key, not null"
+    },
+    "column:users.email": {
+      "summary": "TEXT, not null"
+    },
+    "column:users.created_at": {
+      "summary": "REAL, not null"
+    }
+  }
+}

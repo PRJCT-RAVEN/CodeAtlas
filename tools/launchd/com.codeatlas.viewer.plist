@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- CodeAtlas viewer as a launchd user agent. Template: tools/install-launchd.sh
+     substitutes __REPO__ / __HOME__ and copies it to ~/Library/LaunchAgents.
+
+     KeepAlive.SuccessfulExit=false: relaunch only when serve.sh exits non-zero (vite died).
+     serve.sh exits 0 when the viewer is already up or the port is held by something else,
+     so a port conflict no longer causes a relaunch storm.
+
+     No StandardOutPath/StandardErrorPath on purpose: serve.sh appends to
+     ~/Library/Logs/codeatlas-viewer.log itself (works identically when run by hand) and
+     rotates it by size. A second launchd-held fd on the same file would defeat rotation
+     (launchd keeps the old inode open) and double-write every line. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.codeatlas.viewer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__REPO__/tools/serve.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__/viewer</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

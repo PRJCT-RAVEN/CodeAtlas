@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeatlas.dev/schema/ir-0.2.schema.json",
+  "title": "CodeAtlas Graph IR v0.2",
+  "description": "The Graph IR contract between graph producers (Claude sessions, fs2ir, schema2ir) and the viewer. v0.2 widens kind vocabularies, makes locs optional and adds document title/description so Claude can author conceptual views (dataflow, control flow, architecture answers) — not just code structure. Cite locs whenever an element refers to real code: that is the audit trail. irVersion 0.1 documents remain valid.",
+  "type": "object",
+  "properties": {
+    "irVersion": {
+      "enum": ["0.1", "0.2"],
+      "description": "Schema version of this IR document. 0.1 documents remain valid."
+    },
+    "generator": {
+      "type": "object",
+      "description": "Tool that produced this IR.",
+      "properties": {
+        "tool": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "commit": {
+          "type": ["string", "null"],
+          "description": "Commit hash of the analyzed repo, or null if not in a git repo."
+        }
+      },
+      "required": ["tool", "version"],
+      "additionalProperties": false
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional human title for this view (the question it answers). The viewer shows it in the title bar; falls back to the root node name."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional one-paragraph description of the view: what was included, what was cut, caveats. Shown by the viewer under the title."
+    },
+    "root": {
+      "$ref": "#/$defs/nodeId",
+      "description": "ID of the root node of the graph (usually a package or module). The root is the only node without a parent; the viewer uses it as the canvas."
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" },
+      "description": "All nodes, sorted by id in UTF-8 byte order (Buffer.compare / memcmp, NOT JavaScript string order) for determinism."
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" },
+      "description": "All edges, sorted by id in UTF-8 byte order for determinism. Every parent link must be mirrored by a `contains` edge from the parent to the child."
+    },
+    "clusters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/cluster" },
+      "description": "Named groupings of nodes, mechanical or agent-produced. Cluster ids must be unique."
+    },
+    "annotations": { "$ref": "#/$defs/annotations" }
+  },
+  "required": ["irVersion", "generator", "root", "nodes", "edges"],
+  "additionalProperties": false,
+
+  "$defs": {
+    "nodeId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*:.+$",
+      "description": "Stable node ID: kind prefix + fully-qualified path (never file offsets). Well-known prefixes: package, module, file, type, func (kind=function), prop (kind=property). Custom views may use any lowercase prefix (e.g. step:, store:, actor:)."
+    },
+    "edgeId": {
+      "type": "string",
+      "pattern": "^e:[a-z][a-z0-9_]*:.+->.+$",
+      "description": "Stable edge ID: 'e:<kind>:<fromId>-><toId>'."
+    },
+    "clusterId": {
+      "type": "string",
+      "pattern": "^cluster:.+$"
+    },
+    "loc": {
+      "type": "object",
+      "description": "Source location, 1-based line and optional 1-based column. Paths are repo-root-relative with forward slashes (the root node's attrs.absRoot names the repo), or absolute.",
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional; defaults to 1. Ignored when opening files (file:line is the audit unit)."
+        }
+      },
+      "required": ["file", "line"],
+      "additionalProperties": false
+    },
+    "node": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/nodeId" },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Well-known kinds (package|module|file|type|function|property) get dedicated styling in the viewer; any other string is allowed for conceptual views and renders with derived styling."
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "parent": {
+          "$ref": "#/$defs/nodeId",
+          "description": "ID of the containing node. Omitted only for the root node. Parent chains must be acyclic and end at the root; each link is mirrored by a `contains` edge."
+        },
+        "loc": {
+          "$ref": "#/$defs/loc",
+          "description": "Declaration site. For package/module nodes this points at the manifest (Package.swift) entry."
+        },
+        "attrs": {
+          "type": "object",
+          "description": "Extensible node attributes. Known keys are typed; producers may add more.",
+          "properties": {
+            "access": {
+              "type": ["string", "null"],
+              "description": "Access level, e.g. open|public|package|internal|fileprivate|private."
+            },
+            "isAsync": { "type": ["boolean", "null"] },
+            "isStatic": { "type": ["boolean", "null"] },
+            "isThrowing": { "type": ["boolean", "null"] },
+            "isCase": {
+              "type": ["boolean", "null"],
+              "description": "True for enum cases (kind=property with an `isCase` marker)."
+            },
+            "typeKind": {
+              "type": ["string", "null"],
+              "description": "Only meaningful for kind=type. Any string: class, struct, enum, protocol, actor, extension, interface, trait, record, …"
+            },
+            "absRoot": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Root node only: absolute path of the directory that repo-relative locs resolve against (emitted by `codeatlas analyze` and fs2ir; used by the viewer's Open-in-editor)."
+            },
+            "scale": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Leaf size multiplier applied by the viewer to the node's width and height (fs2ir --sizes: clamp(1 + log10(max(bytes,1)/1024)/2, 1, 2.6)). Omit for the default 1."
+            },
+            "skipped": {
+              "type": "object",
+              "description": "Counts of children a producer silently could not emit (fs2ir: fifo|socket|device|unreadable|ignored). Present only when at least one count is non-zero — truncation is never silent.",
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "additionalProperties": true
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Extensible numeric metrics (e.g. loc, fanIn, fanOut, bytes).",
+          "additionalProperties": { "type": "number" }
+        }
+      },
+      "required": ["id", "kind", "name"],
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/edgeId" },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Well-known kinds (imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes) get dedicated styling; any other string is allowed for conceptual views. `contains` always renders as nesting, never as an arrow, and must agree with the child's `parent`."
+        },
+        "from": { "$ref": "#/$defs/nodeId" },
+        "to": { "$ref": "#/$defs/nodeId" },
+        "locs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/loc" },
+          "minItems": 1,
+          "description": "Every site supporting this edge (e.g. every call site). REQUIRED in spirit whenever the edge refers to real code — it is the anti-hallucination audit trail and powers click-to-source. Omit only for purely conceptual edges."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Multiplicity of the edge: number of supporting sites, or for a loc-free conceptual edge the number of times the relation occurs. When both count and locs are present they must agree (count == locs.length, checked by the validator)."
+        }
+      },
+      "required": ["id", "kind", "from", "to"],
+      "additionalProperties": false
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/clusterId" },
+        "name": { "type": "string", "minLength": 1 },
+        "members": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nodeId" },
+          "uniqueItems": true
+        },
+        "source": { "enum": ["agent", "mechanical"] }
+      },
+      "required": ["id", "name", "members", "source"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "type": "object",
+      "description": "Map from node/edge/cluster ID to an annotation object (agent- or tool-produced). Known keys are typed; any other key is allowed.",
+      "propertyNames": {
+        "pattern": "^(e:[a-z][a-z0-9_]*:.+|[a-z][a-z0-9_]*:.+)$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One-paragraph explanation shown in the details panel (for the root: the view's caption)."
+          },
+          "importance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "0..1 salience; the viewer maps it to emphasis (edge stroke width, node prominence)."
+          },
+          "label": {
+            "type": "string",
+            "description": "Overrides the derived label (edges: kind + count) in the viewer."
+          },
+          "collapsedByDefault": {
+            "type": "boolean",
+            "description": "Containers only: start collapsed on first load of this graph."
+          },
+          "inferred": {
+            "type": "boolean",
+            "description": "Edges only: true when the relation was inferred (dynamic dispatch, convention, reading between the lines) rather than seen at a verified loc. The viewer renders inferred edges dashed with a '?' marker — the honesty rule."
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "agentPatch": {
+      "type": "object",
+      "title": "Abstraction agent patch",
+      "description": "The only shape an agent patch may take (spec F6): clusters and/or annotations. Any patch touching nodes or edges is invalid.",
+      "properties": {
+        "clusters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cluster" }
+        },
+        "annotations": { "$ref": "#/$defs/annotations" }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  }
+}

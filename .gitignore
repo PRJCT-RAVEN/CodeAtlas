@@ -1,0 +1,12 @@
+node_modules/
+.build/
+dist/
+.DS_Store
+DerivedData/
+*.log
+viewer/public/live/
+CLAUDE.local.md
+xcuserdata/
+viewer/tsconfig.tsbuildinfo
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

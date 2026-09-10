@@ -1,0 +1,15 @@
+{
+  "name": "@codeatlas/schema",
+  "version": "0.2.0",
+  "private": true,
+  "description": "CodeAtlas Graph IR JSON Schema and validator CLI",
+  "type": "module",
+  "main": "validate.mjs",
+  "scripts": {
+    "validate": "node validate.mjs",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  }
+}

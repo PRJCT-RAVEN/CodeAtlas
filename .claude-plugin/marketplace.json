@@ -1,0 +1,22 @@
+{
+  "name": "codeatlas",
+  "owner": {
+    "name": "PRJCT-RAVEN",
+    "email": "299946042+PRJCT-RAVEN@users.noreply.github.com"
+  },
+  "description": "CodeAtlas — live, verified code diagrams drawn by Claude",
+  "plugins": [
+    {
+      "name": "codeatlas",
+      "source": "./",
+      "description": "Ask a question about any codebase; Claude draws the answer in a local viewer with every node linked to file:line.",
+      "version": "0.2.0",
+      "keywords": [
+        "diagram",
+        "architecture",
+        "visualization"
+      ],
+      "license": "MIT"
+    }
+  ]
+}

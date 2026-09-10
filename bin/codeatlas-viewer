@@ -1,0 +1,8 @@
+#!/bin/sh
+# codeatlas-viewer — POSIX shim for bin/codeatlas-viewer.mjs (the launcher itself;
+# Windows users get bin/codeatlas-viewer.cmd). Requires Node.js >= 20 on PATH.
+set -eu
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+command -v node >/dev/null 2>&1 || { echo "codeatlas-viewer: node not found on PATH (need Node.js >= 20): https://nodejs.org" >&2; exit 1; }
+exec node "$HERE/codeatlas-viewer.mjs" "$@"

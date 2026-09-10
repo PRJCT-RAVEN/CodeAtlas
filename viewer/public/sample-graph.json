@@ -1,0 +1,1008 @@
+{
+  "irVersion": "0.1",
+  "generator": {
+    "tool": "codeatlas-sample",
+    "version": "0.1.0",
+    "commit": null
+  },
+  "root": "package:Medium",
+  "nodes": [
+    {
+      "id": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "kind": "file",
+      "name": "InMemoryRepository.swift",
+      "parent": "module:MediumCore",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "file:Sources/MediumCore/Models.swift",
+      "kind": "file",
+      "name": "Models.swift",
+      "parent": "module:MediumCore",
+      "loc": {
+        "file": "Sources/MediumCore/Models.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "file:Sources/MediumCore/Repository.swift",
+      "kind": "file",
+      "name": "Repository.swift",
+      "parent": "module:MediumCore",
+      "loc": {
+        "file": "Sources/MediumCore/Repository.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "file:Sources/MediumFeature/OrderService.swift",
+      "kind": "file",
+      "name": "OrderService.swift",
+      "parent": "module:MediumFeature",
+      "loc": {
+        "file": "Sources/MediumFeature/OrderService.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "file:Sources/MediumFeature/UserService.swift",
+      "kind": "file",
+      "name": "UserService.swift",
+      "parent": "module:MediumFeature",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "func:MediumCore/EventBus.publish(_:)",
+      "kind": "function",
+      "name": "publish(_:)",
+      "parent": "type:MediumCore/EventBus",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 33,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": false,
+        "isThrowing": false
+      }
+    },
+    {
+      "id": "func:MediumCore/EventBus.subscribe(_:)",
+      "kind": "function",
+      "name": "subscribe(_:)",
+      "parent": "type:MediumCore/EventBus",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 29,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": false,
+        "isThrowing": false
+      }
+    },
+    {
+      "id": "func:MediumCore/InMemoryRepository.fetch(id:)",
+      "kind": "function",
+      "name": "fetch(id:)",
+      "parent": "type:MediumCore/InMemoryRepository",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 9,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumCore/InMemoryRepository.save(_:)",
+      "kind": "function",
+      "name": "save(_:)",
+      "parent": "type:MediumCore/InMemoryRepository",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 13,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumCore/Repository.exists(id:)",
+      "kind": "function",
+      "name": "exists(id:)",
+      "parent": "type:MediumCore/Repository",
+      "loc": {
+        "file": "Sources/MediumCore/Repository.swift",
+        "line": 10,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumCore/Repository.fetch(id:)",
+      "kind": "function",
+      "name": "fetch(id:)",
+      "parent": "type:MediumCore/Repository",
+      "loc": {
+        "file": "Sources/MediumCore/Repository.swift",
+        "line": 4,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumCore/Repository.save(_:)",
+      "kind": "function",
+      "name": "save(_:)",
+      "parent": "type:MediumCore/Repository",
+      "loc": {
+        "file": "Sources/MediumCore/Repository.swift",
+        "line": 5,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumFeature/OrderService.place(for:)",
+      "kind": "function",
+      "name": "place(for:)",
+      "parent": "type:MediumFeature/OrderService",
+      "loc": {
+        "file": "Sources/MediumFeature/OrderService.swift",
+        "line": 14,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumFeature/UserService.lookup(id:)",
+      "kind": "function",
+      "name": "lookup(id:)",
+      "parent": "type:MediumFeature/UserService",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 21,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "func:MediumFeature/UserService.register(name:email:)",
+      "kind": "function",
+      "name": "register(name:email:)",
+      "parent": "type:MediumFeature/UserService",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 14,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "isAsync": true,
+        "isThrowing": true
+      }
+    },
+    {
+      "id": "module:MediumCore",
+      "kind": "module",
+      "name": "MediumCore",
+      "parent": "package:Medium",
+      "loc": {
+        "file": "Package.swift",
+        "line": 7,
+        "col": 9
+      }
+    },
+    {
+      "id": "module:MediumFeature",
+      "kind": "module",
+      "name": "MediumFeature",
+      "parent": "package:Medium",
+      "loc": {
+        "file": "Package.swift",
+        "line": 8,
+        "col": 9
+      }
+    },
+    {
+      "id": "package:Medium",
+      "kind": "package",
+      "name": "Medium",
+      "loc": {
+        "file": "Package.swift",
+        "line": 1,
+        "col": 1
+      }
+    },
+    {
+      "id": "prop:MediumCore/EventBus.handlers",
+      "kind": "property",
+      "name": "handlers",
+      "parent": "type:MediumCore/EventBus",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 25,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public"
+      }
+    },
+    {
+      "id": "prop:MediumFeature/OrderService.orders",
+      "kind": "property",
+      "name": "orders",
+      "parent": "type:MediumFeature/OrderService",
+      "loc": {
+        "file": "Sources/MediumFeature/OrderService.swift",
+        "line": 6,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public"
+      }
+    },
+    {
+      "id": "prop:MediumFeature/OrderService.users",
+      "kind": "property",
+      "name": "users",
+      "parent": "type:MediumFeature/OrderService",
+      "loc": {
+        "file": "Sources/MediumFeature/OrderService.swift",
+        "line": 7,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public"
+      }
+    },
+    {
+      "id": "prop:MediumFeature/UserService.bus",
+      "kind": "property",
+      "name": "bus",
+      "parent": "type:MediumFeature/UserService",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 7,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public"
+      }
+    },
+    {
+      "id": "prop:MediumFeature/UserService.repository",
+      "kind": "property",
+      "name": "repository",
+      "parent": "type:MediumFeature/UserService",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 6,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public"
+      }
+    },
+    {
+      "id": "type:MediumCore/EventBus",
+      "kind": "type",
+      "name": "EventBus",
+      "parent": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 23,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "class"
+      }
+    },
+    {
+      "id": "type:MediumCore/InMemoryRepository",
+      "kind": "type",
+      "name": "InMemoryRepository",
+      "parent": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "loc": {
+        "file": "Sources/MediumCore/InMemoryRepository.swift",
+        "line": 4,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "actor"
+      }
+    },
+    {
+      "id": "type:MediumCore/Order",
+      "kind": "type",
+      "name": "Order",
+      "parent": "file:Sources/MediumCore/Models.swift",
+      "loc": {
+        "file": "Sources/MediumCore/Models.swift",
+        "line": 17,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "struct"
+      }
+    },
+    {
+      "id": "type:MediumCore/Order.Status",
+      "kind": "type",
+      "name": "Order.Status",
+      "parent": "type:MediumCore/Order",
+      "loc": {
+        "file": "Sources/MediumCore/Models.swift",
+        "line": 18,
+        "col": 5
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "enum"
+      }
+    },
+    {
+      "id": "type:MediumCore/Repository",
+      "kind": "type",
+      "name": "Repository",
+      "parent": "file:Sources/MediumCore/Repository.swift",
+      "loc": {
+        "file": "Sources/MediumCore/Repository.swift",
+        "line": 2,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "protocol"
+      }
+    },
+    {
+      "id": "type:MediumCore/User",
+      "kind": "type",
+      "name": "User",
+      "parent": "file:Sources/MediumCore/Models.swift",
+      "loc": {
+        "file": "Sources/MediumCore/Models.swift",
+        "line": 4,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "struct"
+      }
+    },
+    {
+      "id": "type:MediumFeature/OrderService",
+      "kind": "type",
+      "name": "OrderService",
+      "parent": "file:Sources/MediumFeature/OrderService.swift",
+      "loc": {
+        "file": "Sources/MediumFeature/OrderService.swift",
+        "line": 5,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "struct"
+      }
+    },
+    {
+      "id": "type:MediumFeature/UserService",
+      "kind": "type",
+      "name": "UserService",
+      "parent": "file:Sources/MediumFeature/UserService.swift",
+      "loc": {
+        "file": "Sources/MediumFeature/UserService.swift",
+        "line": 5,
+        "col": 1
+      },
+      "attrs": {
+        "access": "public",
+        "typeKind": "struct"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e:calls:func:MediumCore/Repository.exists(id:)->func:MediumCore/Repository.fetch(id:)",
+      "kind": "calls",
+      "from": "func:MediumCore/Repository.exists(id:)",
+      "to": "func:MediumCore/Repository.fetch(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 11,
+          "col": 19
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:calls:func:MediumFeature/OrderService.place(for:)->func:MediumCore/InMemoryRepository.save(_:)",
+      "kind": "calls",
+      "from": "func:MediumFeature/OrderService.place(for:)",
+      "to": "func:MediumCore/InMemoryRepository.save(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 17,
+          "col": 19
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:calls:func:MediumFeature/OrderService.place(for:)->func:MediumFeature/UserService.lookup(id:)",
+      "kind": "calls",
+      "from": "func:MediumFeature/OrderService.place(for:)",
+      "to": "func:MediumFeature/UserService.lookup(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 15,
+          "col": 25
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:calls:func:MediumFeature/UserService.lookup(id:)->func:MediumCore/InMemoryRepository.fetch(id:)",
+      "kind": "calls",
+      "from": "func:MediumFeature/UserService.lookup(id:)",
+      "to": "func:MediumCore/InMemoryRepository.fetch(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 22,
+          "col": 19
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:calls:func:MediumFeature/UserService.register(name:email:)->func:MediumCore/EventBus.publish(_:)",
+      "kind": "calls",
+      "from": "func:MediumFeature/UserService.register(name:email:)",
+      "to": "func:MediumCore/EventBus.publish(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 17,
+          "col": 9
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:calls:func:MediumFeature/UserService.register(name:email:)->func:MediumCore/InMemoryRepository.save(_:)",
+      "kind": "calls",
+      "from": "func:MediumFeature/UserService.register(name:email:)",
+      "to": "func:MediumCore/InMemoryRepository.save(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 16,
+          "col": 19
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:conforms_to:type:MediumCore/InMemoryRepository->type:MediumCore/Repository",
+      "kind": "conforms_to",
+      "from": "type:MediumCore/InMemoryRepository",
+      "to": "type:MediumCore/Repository",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 4,
+          "col": 50
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:contains:file:Sources/MediumCore/InMemoryRepository.swift->type:MediumCore/EventBus",
+      "kind": "contains",
+      "from": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "to": "type:MediumCore/EventBus",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 23,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumCore/InMemoryRepository.swift->type:MediumCore/InMemoryRepository",
+      "kind": "contains",
+      "from": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "to": "type:MediumCore/InMemoryRepository",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 4,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumCore/Models.swift->type:MediumCore/Order",
+      "kind": "contains",
+      "from": "file:Sources/MediumCore/Models.swift",
+      "to": "type:MediumCore/Order",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Models.swift",
+          "line": 17,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumCore/Models.swift->type:MediumCore/User",
+      "kind": "contains",
+      "from": "file:Sources/MediumCore/Models.swift",
+      "to": "type:MediumCore/User",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Models.swift",
+          "line": 4,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumCore/Repository.swift->type:MediumCore/Repository",
+      "kind": "contains",
+      "from": "file:Sources/MediumCore/Repository.swift",
+      "to": "type:MediumCore/Repository",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 2,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumFeature/OrderService.swift->type:MediumFeature/OrderService",
+      "kind": "contains",
+      "from": "file:Sources/MediumFeature/OrderService.swift",
+      "to": "type:MediumFeature/OrderService",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 5,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:file:Sources/MediumFeature/UserService.swift->type:MediumFeature/UserService",
+      "kind": "contains",
+      "from": "file:Sources/MediumFeature/UserService.swift",
+      "to": "type:MediumFeature/UserService",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 5,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:module:MediumCore->file:Sources/MediumCore/InMemoryRepository.swift",
+      "kind": "contains",
+      "from": "module:MediumCore",
+      "to": "file:Sources/MediumCore/InMemoryRepository.swift",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 1,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:module:MediumCore->file:Sources/MediumCore/Models.swift",
+      "kind": "contains",
+      "from": "module:MediumCore",
+      "to": "file:Sources/MediumCore/Models.swift",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Models.swift",
+          "line": 1,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:module:MediumCore->file:Sources/MediumCore/Repository.swift",
+      "kind": "contains",
+      "from": "module:MediumCore",
+      "to": "file:Sources/MediumCore/Repository.swift",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 1,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:module:MediumFeature->file:Sources/MediumFeature/OrderService.swift",
+      "kind": "contains",
+      "from": "module:MediumFeature",
+      "to": "file:Sources/MediumFeature/OrderService.swift",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 1,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:module:MediumFeature->file:Sources/MediumFeature/UserService.swift",
+      "kind": "contains",
+      "from": "module:MediumFeature",
+      "to": "file:Sources/MediumFeature/UserService.swift",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 1,
+          "col": 1
+        }
+      ]
+    },
+    {
+      "id": "e:contains:package:Medium->module:MediumCore",
+      "kind": "contains",
+      "from": "package:Medium",
+      "to": "module:MediumCore",
+      "locs": [
+        {
+          "file": "Package.swift",
+          "line": 7,
+          "col": 9
+        }
+      ]
+    },
+    {
+      "id": "e:contains:package:Medium->module:MediumFeature",
+      "kind": "contains",
+      "from": "package:Medium",
+      "to": "module:MediumFeature",
+      "locs": [
+        {
+          "file": "Package.swift",
+          "line": 8,
+          "col": 9
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/EventBus->func:MediumCore/EventBus.publish(_:)",
+      "kind": "contains",
+      "from": "type:MediumCore/EventBus",
+      "to": "func:MediumCore/EventBus.publish(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 33,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/EventBus->func:MediumCore/EventBus.subscribe(_:)",
+      "kind": "contains",
+      "from": "type:MediumCore/EventBus",
+      "to": "func:MediumCore/EventBus.subscribe(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 29,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/EventBus->prop:MediumCore/EventBus.handlers",
+      "kind": "contains",
+      "from": "type:MediumCore/EventBus",
+      "to": "prop:MediumCore/EventBus.handlers",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 25,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/InMemoryRepository->func:MediumCore/InMemoryRepository.fetch(id:)",
+      "kind": "contains",
+      "from": "type:MediumCore/InMemoryRepository",
+      "to": "func:MediumCore/InMemoryRepository.fetch(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 9,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/InMemoryRepository->func:MediumCore/InMemoryRepository.save(_:)",
+      "kind": "contains",
+      "from": "type:MediumCore/InMemoryRepository",
+      "to": "func:MediumCore/InMemoryRepository.save(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 13,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/Order->type:MediumCore/Order.Status",
+      "kind": "contains",
+      "from": "type:MediumCore/Order",
+      "to": "type:MediumCore/Order.Status",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Models.swift",
+          "line": 18,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/Repository->func:MediumCore/Repository.exists(id:)",
+      "kind": "contains",
+      "from": "type:MediumCore/Repository",
+      "to": "func:MediumCore/Repository.exists(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 10,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/Repository->func:MediumCore/Repository.fetch(id:)",
+      "kind": "contains",
+      "from": "type:MediumCore/Repository",
+      "to": "func:MediumCore/Repository.fetch(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 4,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumCore/Repository->func:MediumCore/Repository.save(_:)",
+      "kind": "contains",
+      "from": "type:MediumCore/Repository",
+      "to": "func:MediumCore/Repository.save(_:)",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/Repository.swift",
+          "line": 5,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/OrderService->func:MediumFeature/OrderService.place(for:)",
+      "kind": "contains",
+      "from": "type:MediumFeature/OrderService",
+      "to": "func:MediumFeature/OrderService.place(for:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 14,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/OrderService->prop:MediumFeature/OrderService.orders",
+      "kind": "contains",
+      "from": "type:MediumFeature/OrderService",
+      "to": "prop:MediumFeature/OrderService.orders",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 6,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/OrderService->prop:MediumFeature/OrderService.users",
+      "kind": "contains",
+      "from": "type:MediumFeature/OrderService",
+      "to": "prop:MediumFeature/OrderService.users",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 7,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/UserService->func:MediumFeature/UserService.lookup(id:)",
+      "kind": "contains",
+      "from": "type:MediumFeature/UserService",
+      "to": "func:MediumFeature/UserService.lookup(id:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 21,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/UserService->func:MediumFeature/UserService.register(name:email:)",
+      "kind": "contains",
+      "from": "type:MediumFeature/UserService",
+      "to": "func:MediumFeature/UserService.register(name:email:)",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 14,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/UserService->prop:MediumFeature/UserService.bus",
+      "kind": "contains",
+      "from": "type:MediumFeature/UserService",
+      "to": "prop:MediumFeature/UserService.bus",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 7,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:contains:type:MediumFeature/UserService->prop:MediumFeature/UserService.repository",
+      "kind": "contains",
+      "from": "type:MediumFeature/UserService",
+      "to": "prop:MediumFeature/UserService.repository",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 6,
+          "col": 5
+        }
+      ]
+    },
+    {
+      "id": "e:imports:module:MediumFeature->module:MediumCore",
+      "kind": "imports",
+      "from": "module:MediumFeature",
+      "to": "module:MediumCore",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 2,
+          "col": 1
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:instantiates:func:MediumFeature/OrderService.place(for:)->type:MediumCore/Order",
+      "kind": "instantiates",
+      "from": "func:MediumFeature/OrderService.place(for:)",
+      "to": "type:MediumCore/Order",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/OrderService.swift",
+          "line": 16,
+          "col": 21
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:instantiates:func:MediumFeature/UserService.register(name:email:)->type:MediumCore/User",
+      "kind": "instantiates",
+      "from": "func:MediumFeature/UserService.register(name:email:)",
+      "to": "type:MediumCore/User",
+      "locs": [
+        {
+          "file": "Sources/MediumFeature/UserService.swift",
+          "line": 15,
+          "col": 20
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:reads:func:MediumCore/EventBus.publish(_:)->prop:MediumCore/EventBus.handlers",
+      "kind": "reads",
+      "from": "func:MediumCore/EventBus.publish(_:)",
+      "to": "prop:MediumCore/EventBus.handlers",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 34,
+          "col": 24
+        }
+      ],
+      "count": 1
+    },
+    {
+      "id": "e:writes:func:MediumCore/EventBus.subscribe(_:)->prop:MediumCore/EventBus.handlers",
+      "kind": "writes",
+      "from": "func:MediumCore/EventBus.subscribe(_:)",
+      "to": "prop:MediumCore/EventBus.handlers",
+      "locs": [
+        {
+          "file": "Sources/MediumCore/InMemoryRepository.swift",
+          "line": 30,
+          "col": 9
+        }
+      ],
+      "count": 1
+    }
+  ]
+}

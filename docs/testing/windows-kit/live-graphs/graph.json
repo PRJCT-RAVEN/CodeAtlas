@@ -1,0 +1,366 @@
+{
+  "irVersion": "0.2",
+  "generator": {
+    "tool": "claude",
+    "version": "example",
+    "commit": null
+  },
+  "title": "How does an order flow from the cart to the customer's inbox?",
+  "description": "Fictional showcase graph (no real code, hence no locs): three stages, three read-family edges laid out source-above-reader, two feedback edges drawn upward (payment failed → pricing; mailer → customer), one inferred edge.",
+  "root": "view:order-pipeline",
+  "nodes": [
+    {
+      "id": "actor:customer",
+      "kind": "actor",
+      "name": "Customer",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "app:storefront",
+      "kind": "app",
+      "name": "Storefront web app",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "db:catalog",
+      "kind": "db",
+      "name": "catalog",
+      "parent": "stage:intake"
+    },
+    {
+      "id": "db:inventory",
+      "kind": "db",
+      "name": "inventory",
+      "parent": "stage:fulfilment"
+    },
+    {
+      "id": "db:orders",
+      "kind": "db",
+      "name": "orders",
+      "parent": "stage:intake",
+      "metrics": {
+        "rows": 12800
+      }
+    },
+    {
+      "id": "queue:shipments",
+      "kind": "queue",
+      "name": "shipments",
+      "parent": "stage:fulfilment",
+      "metrics": {
+        "depth": 42
+      }
+    },
+    {
+      "id": "service:mailer",
+      "kind": "service",
+      "name": "Mailer",
+      "parent": "stage:notify",
+      "attrs": {
+        "scale": 1.3
+      }
+    },
+    {
+      "id": "stage:fulfilment",
+      "kind": "stage",
+      "name": "Fulfilment",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "stage:intake",
+      "kind": "stage",
+      "name": "Intake",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "stage:notify",
+      "kind": "stage",
+      "name": "Notify",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "step:pack",
+      "kind": "step",
+      "name": "pack",
+      "parent": "stage:fulfilment"
+    },
+    {
+      "id": "step:price_order",
+      "kind": "step",
+      "name": "price_order",
+      "parent": "stage:intake"
+    },
+    {
+      "id": "step:reserve_stock",
+      "kind": "step",
+      "name": "reserve_stock",
+      "parent": "stage:fulfilment"
+    },
+    {
+      "id": "step:send_receipt",
+      "kind": "step",
+      "name": "send_receipt",
+      "parent": "stage:notify"
+    },
+    {
+      "id": "step:track_shipment",
+      "kind": "step",
+      "name": "track_shipment",
+      "parent": "stage:notify"
+    },
+    {
+      "id": "step:validate_cart",
+      "kind": "step",
+      "name": "validate_cart",
+      "parent": "stage:intake"
+    },
+    {
+      "id": "store:events",
+      "kind": "store",
+      "name": "events.log",
+      "parent": "view:order-pipeline"
+    },
+    {
+      "id": "view:order-pipeline",
+      "kind": "view",
+      "name": "Order pipeline"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e:appends:step:pack->store:events",
+      "kind": "appends",
+      "from": "step:pack",
+      "to": "store:events"
+    },
+    {
+      "id": "e:appends:step:validate_cart->store:events",
+      "kind": "appends",
+      "from": "step:validate_cart",
+      "to": "store:events"
+    },
+    {
+      "id": "e:calls:step:reserve_stock->step:pack",
+      "kind": "calls",
+      "from": "step:reserve_stock",
+      "to": "step:pack"
+    },
+    {
+      "id": "e:calls:step:send_receipt->service:mailer",
+      "kind": "calls",
+      "from": "step:send_receipt",
+      "to": "service:mailer"
+    },
+    {
+      "id": "e:calls:step:validate_cart->step:price_order",
+      "kind": "calls",
+      "from": "step:validate_cart",
+      "to": "step:price_order"
+    },
+    {
+      "id": "e:contains:stage:fulfilment->db:inventory",
+      "kind": "contains",
+      "from": "stage:fulfilment",
+      "to": "db:inventory"
+    },
+    {
+      "id": "e:contains:stage:fulfilment->queue:shipments",
+      "kind": "contains",
+      "from": "stage:fulfilment",
+      "to": "queue:shipments"
+    },
+    {
+      "id": "e:contains:stage:fulfilment->step:pack",
+      "kind": "contains",
+      "from": "stage:fulfilment",
+      "to": "step:pack"
+    },
+    {
+      "id": "e:contains:stage:fulfilment->step:reserve_stock",
+      "kind": "contains",
+      "from": "stage:fulfilment",
+      "to": "step:reserve_stock"
+    },
+    {
+      "id": "e:contains:stage:intake->db:catalog",
+      "kind": "contains",
+      "from": "stage:intake",
+      "to": "db:catalog"
+    },
+    {
+      "id": "e:contains:stage:intake->db:orders",
+      "kind": "contains",
+      "from": "stage:intake",
+      "to": "db:orders"
+    },
+    {
+      "id": "e:contains:stage:intake->step:price_order",
+      "kind": "contains",
+      "from": "stage:intake",
+      "to": "step:price_order"
+    },
+    {
+      "id": "e:contains:stage:intake->step:validate_cart",
+      "kind": "contains",
+      "from": "stage:intake",
+      "to": "step:validate_cart"
+    },
+    {
+      "id": "e:contains:stage:notify->service:mailer",
+      "kind": "contains",
+      "from": "stage:notify",
+      "to": "service:mailer"
+    },
+    {
+      "id": "e:contains:stage:notify->step:send_receipt",
+      "kind": "contains",
+      "from": "stage:notify",
+      "to": "step:send_receipt"
+    },
+    {
+      "id": "e:contains:stage:notify->step:track_shipment",
+      "kind": "contains",
+      "from": "stage:notify",
+      "to": "step:track_shipment"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->actor:customer",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "actor:customer"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->app:storefront",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "app:storefront"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->stage:fulfilment",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "stage:fulfilment"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->stage:intake",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "stage:intake"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->stage:notify",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "stage:notify"
+    },
+    {
+      "id": "e:contains:view:order-pipeline->store:events",
+      "kind": "contains",
+      "from": "view:order-pipeline",
+      "to": "store:events"
+    },
+    {
+      "id": "e:emits:step:pack->queue:shipments",
+      "kind": "emits",
+      "from": "step:pack",
+      "to": "queue:shipments"
+    },
+    {
+      "id": "e:notifies:service:mailer->actor:customer",
+      "kind": "notifies",
+      "from": "service:mailer",
+      "to": "actor:customer"
+    },
+    {
+      "id": "e:polls:step:track_shipment->queue:shipments",
+      "kind": "polls",
+      "from": "step:track_shipment",
+      "to": "queue:shipments"
+    },
+    {
+      "id": "e:reads:step:price_order->db:catalog",
+      "kind": "reads",
+      "from": "step:price_order",
+      "to": "db:catalog"
+    },
+    {
+      "id": "e:reads:step:reserve_stock->db:inventory",
+      "kind": "reads",
+      "from": "step:reserve_stock",
+      "to": "db:inventory"
+    },
+    {
+      "id": "e:sends:app:storefront->step:validate_cart",
+      "kind": "sends",
+      "from": "app:storefront",
+      "to": "step:validate_cart"
+    },
+    {
+      "id": "e:submits:actor:customer->app:storefront",
+      "kind": "submits",
+      "from": "actor:customer",
+      "to": "app:storefront",
+      "count": 1
+    },
+    {
+      "id": "e:triggers:step:pack->step:send_receipt",
+      "kind": "triggers",
+      "from": "step:pack",
+      "to": "step:send_receipt"
+    },
+    {
+      "id": "e:triggers:step:price_order->step:reserve_stock",
+      "kind": "triggers",
+      "from": "step:price_order",
+      "to": "step:reserve_stock"
+    },
+    {
+      "id": "e:triggers:step:send_receipt->step:price_order",
+      "kind": "triggers",
+      "from": "step:send_receipt",
+      "to": "step:price_order",
+      "count": 2
+    },
+    {
+      "id": "e:writes:step:price_order->db:orders",
+      "kind": "writes",
+      "from": "step:price_order",
+      "to": "db:orders"
+    },
+    {
+      "id": "e:writes:step:reserve_stock->db:orders",
+      "kind": "writes",
+      "from": "step:reserve_stock",
+      "to": "db:orders"
+    }
+  ],
+  "annotations": {
+    "view:order-pipeline": {
+      "summary": "A made-up e-commerce order pipeline used to exercise the viewer: containers, read-family edges, a feedback loop, an inferred edge, metrics and importance."
+    },
+    "stage:intake": {
+      "summary": "Cart validation and pricing; writes the order and appends an event."
+    },
+    "stage:fulfilment": {
+      "summary": "Reserves stock, packs, and enqueues a shipment."
+    },
+    "stage:notify": {
+      "summary": "Receipts and shipment tracking.",
+      "collapsedByDefault": false
+    },
+    "e:notifies:service:mailer->actor:customer": {
+      "inferred": true,
+      "summary": "inferred: the mailer's delivery to the customer is outside this system; drawn upward as the loop back to the actor.",
+      "feedback": true
+    },
+    "e:submits:actor:customer->app:storefront": {
+      "importance": 0.7
+    },
+    "e:triggers:step:send_receipt->step:price_order": {
+      "label": "payment failed",
+      "importance": 0.9,
+      "summary": "Feedback loop: a declined payment sends the order back to pricing. ELK breaks the cycle here, so this edge points upward.",
+      "feedback": true
+    }
+  }
+}

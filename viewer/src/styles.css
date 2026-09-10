@@ -1,0 +1,598 @@
+/* CodeAtlas — DFD-inspired visual language. Every colour is a token from
+ * src/theme.ts (dark + light, both validated); nothing here names a colour.
+ * Node ARCHETYPE (not kind) picks the treatment:
+ *   process  → warm cream pill (focal, like classic DFD process bubbles)
+ *   entity   → pastel filled rect, dark ink
+ *   store    → open top/bottom rails, transparent body (Gane–Sarson data store)
+ *   container→ thin rounded outline + floating label chip that interrupts the border
+ * Kind → accent slot (--accent-N / --pastel-N), set per node by App.tsx.
+ */
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+}
+
+.atlas-root {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  background: var(--bg);
+}
+
+.react-flow__pane,
+.react-flow__renderer {
+  background: var(--bg);
+}
+
+/* --- nodes --------------------------------------------------------------- */
+
+.atlas-node {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  position: relative;
+  font-size: 12.5px;
+}
+
+.atlas-node .body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 100%;
+  padding: 0 14px;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.atlas-node .badge {
+  font-size: 8.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  flex: none;
+}
+
+.atlas-node .name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* process — cream pill */
+.atlas-node.a-process {
+  background: var(--process-fill);
+  border-radius: 999px;
+  border: 1px solid var(--process-border);
+  color: var(--process-ink);
+  box-shadow: 0 1px 6px var(--node-shadow);
+}
+.atlas-node.a-process .badge {
+  color: var(--process-badge);
+}
+
+/* entity — pastel rect, dark ink */
+.atlas-node.a-entity {
+  background: var(--pastel);
+  border-radius: 8px;
+  border: 1px solid var(--entity-border);
+  color: var(--entity-ink);
+  box-shadow: 0 1px 6px var(--node-shadow);
+}
+.atlas-node.a-entity .badge {
+  color: var(--entity-badge);
+}
+
+/* store — open horizontal rails */
+.atlas-node.a-store {
+  background: var(--store-fill);
+  border-top: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  color: var(--store-ink);
+}
+.atlas-node.a-store .badge {
+  color: var(--accent);
+}
+
+/* container — thin outline, floating chip */
+.atlas-node.a-container {
+  border: 1.25px solid var(--accent-dim, var(--container-border));
+  border-radius: 12px;
+  background: var(--container-fill);
+}
+.atlas-node.a-container > .chip {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--bg);
+  padding: 2px 9px;
+  border-radius: 5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  max-width: calc(100% - 20px);
+  box-sizing: border-box;
+}
+.atlas-node.a-container > .chip .badge {
+  color: var(--ink-3);
+}
+.atlas-node.a-container > .chip .name {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--accent, var(--ink));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* collapsed container — outlined box, chip rendered inline (centered) */
+.atlas-node.a-container.collapsed {
+  background: var(--container-fill-collapsed);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.atlas-node.a-container.collapsed > .chip {
+  position: static;
+  background: none;
+  padding: 0 12px;
+  max-width: none; /* the node is sized for the chip — never ellipsize it */
+}
+
+/* file-tree niceties: no per-file badge spam; overflow = ghost node */
+.atlas-node[data-kind="doc"] .badge {
+  display: none;
+}
+.atlas-node[data-kind="overflow"] {
+  background: none;
+  border: 1.5px dashed var(--overflow-border);
+  border-radius: 8px;
+  color: var(--ink-3);
+  box-shadow: none;
+}
+.atlas-node[data-kind="overflow"] .badge {
+  display: none;
+}
+
+.atlas-node.selected {
+  box-shadow: 0 0 0 2px var(--select), 0 0 14px var(--select-glow);
+}
+
+/* Handles exist only so React Flow renders edges — never show them. */
+.atlas-handle {
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  pointer-events: none;
+}
+
+/* big views (> BIG_VIEW visible nodes, App.tsx): no per-node shadows — panning
+ * is paint-bound at that size and blurred shadows dominate the paint */
+.atlas-big .atlas-node,
+.atlas-big .atlas-node.selected {
+  box-shadow: none;
+}
+.atlas-big .atlas-node.selected {
+  outline: 2px solid var(--select);
+}
+
+/* --- React Flow chrome ---------------------------------------------------- */
+
+/* React Flow auto-elevates edges between nested nodes above the leaves
+ * (z=6 > our leaf z=4), which parks label chips ON TOP of node pills.
+ * Pin edges between container fills (0) and leaf marks (4). */
+.react-flow__edges > svg {
+  z-index: 2 !important;
+}
+
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls button {
+  background: var(--panel);
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--border-soft);
+  width: 26px;
+  height: 26px;
+}
+.react-flow__controls button:hover {
+  background: var(--panel-2);
+}
+.react-flow__controls button svg {
+  fill: currentColor;
+}
+
+.react-flow__minimap {
+  background: var(--minimap-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* --- minimap card (bottom-right, collapsible like the key) ---------------- */
+
+.map-panel {
+  z-index: 30;
+}
+.map {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  box-shadow: 0 8px 28px var(--shadow);
+  color: var(--ink-2);
+  font-size: 11px;
+}
+.map summary {
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--ink-3);
+  user-select: none;
+}
+.map .react-flow__minimap {
+  position: static;
+  margin: 8px 0 0;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* --- key (dynamic legend, top-left) --------------------------------------- */
+
+.key {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  box-shadow: 0 8px 28px var(--shadow);
+  color: var(--ink-2);
+  font-size: 11px;
+  max-height: 70vh;
+  max-width: 200px;
+  overflow-y: auto;
+}
+
+.key summary {
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.key-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.key-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+.key-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.2;
+}
+.key-row svg {
+  flex: none;
+}
+
+/* --- details panel -------------------------------------------------------- */
+
+.details {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 280px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 28px var(--shadow);
+  z-index: 20;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.details h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  word-break: break-all;
+  color: var(--ink-strong);
+}
+
+.details dt {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-3);
+  margin-top: 8px;
+}
+
+.details dd {
+  margin: 2px 0 0;
+  word-break: break-all;
+  color: var(--ink-2);
+}
+
+.details .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.details .open-editor,
+.details button.open-editor {
+  display: inline-block;
+  margin-top: 12px;
+  margin-right: 8px;
+  font-size: 12px;
+  color: var(--link);
+}
+
+.details button {
+  margin-top: 12px;
+  font-size: 12px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.details button:hover {
+  background: var(--panel-3);
+}
+
+.details .edge-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 32vh;
+  overflow-y: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.details .edge-list b {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* --- routed edges: label chips placed by ELK ------------------------------- */
+
+/* React Flow renders EdgeLabelRenderer children in their own layer inside the
+ * viewport. Keep it under leaf marks (4) and above container fills (3) so a
+ * chip can never sit on top of a pill — ELK reserves room for chips anyway. */
+.react-flow__edgelabel-renderer {
+  z-index: 3;
+}
+
+.edge-chip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--chip-bg);
+  color: var(--chip-ink);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 12px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid var(--chip-border);
+}
+.edge-chip.inferred {
+  border: 1px dashed var(--edge-neutral);
+  color: var(--ink);
+}
+.edge-chip.delta-added {
+  border-color: var(--delta-added);
+}
+
+/* --- delta highlighting (what changed since the previous live graph) ------ */
+
+.atlas-node.delta-added {
+  outline: 2px solid var(--delta-added);
+  outline-offset: 3px;
+}
+.atlas-node.delta-modified {
+  outline: 2px solid var(--delta-modified);
+  outline-offset: 3px;
+}
+.swatch-delta {
+  display: inline-block;
+  width: 18px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 3px;
+  flex: none;
+}
+.swatch-delta.added {
+  border: 2px solid var(--delta-added);
+}
+.swatch-delta.modified {
+  border: 2px solid var(--delta-modified);
+}
+
+/* --- search / filter / theme toggle ------------------------------------------ */
+
+.atlas-node.dim {
+  opacity: 0.18;
+}
+
+.key-stack {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 200px;
+}
+.key-stack .key {
+  position: static;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 10px;
+  box-shadow: 0 8px 28px var(--shadow);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-size: 11.5px;
+}
+.search input::placeholder {
+  color: var(--ink-4);
+}
+.search-count {
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.theme-toggle {
+  flex: none;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.theme-toggle:hover {
+  background: var(--panel-3);
+}
+
+.status .link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* --- title bar / status bar ------------------------------------------------- */
+
+.title-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: 46vw;
+  text-align: center;
+  pointer-events: none;
+}
+.title-bar .title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  letter-spacing: 0.2px;
+}
+.title-bar .description {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--status-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 4px 14px;
+  max-width: 70vw;
+  white-space: nowrap;
+}
+.status.error {
+  color: var(--error-ink);
+  border-color: var(--error-border);
+}
+.status .busy {
+  color: var(--link);
+}
+
+.error-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--error-ink);
+  font-size: 13px;
+}
+
+.details .summary {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+.details .open-result {
+  margin-top: 8px;
+  color: var(--ink-3);
+  word-break: break-all;
+}

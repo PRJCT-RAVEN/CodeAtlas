@@ -1,0 +1,14 @@
+# Line endings must be deterministic on every platform. Git for Windows installs
+# with core.autocrlf=true, which rewrites detected-text files LF -> CRLF on
+# checkout: that turned bin/codeatlas-viewer's `#!/bin/sh` into `#!/bin/sh^M`, so
+# a Windows user's very first command died with "bad interpreter". Pin both
+# directions rather than trusting the client's config.
+* text=auto eol=lf
+
+# ...except the Windows shims, which cmd.exe wants with CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never touch binaries.
+*.png binary
+*.sqlite binary

@@ -1,0 +1,21 @@
+{
+  "name": "codeatlas",
+  "displayName": "CodeAtlas",
+  "version": "0.2.0",
+  "description": "Live, verified code diagrams: ask a question about any codebase and Claude draws the answer (data flow, architecture, dependencies) in a local viewer, every node linked to file:line.",
+  "homepage": "https://github.com/PRJCT-RAVEN/CodeAtlas",
+  "repository": "https://github.com/PRJCT-RAVEN/CodeAtlas",
+  "keywords": [
+    "diagram",
+    "architecture",
+    "visualization",
+    "dataflow",
+    "dependency-graph",
+    "code-map"
+  ],
+  "author": {
+    "name": "PRJCT-RAVEN",
+    "email": "299946042+PRJCT-RAVEN@users.noreply.github.com"
+  },
+  "license": "MIT"
+}
