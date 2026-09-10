@@ -47,6 +47,9 @@ Question (if invoked with arguments): $ARGUMENTS
    `parent` mirrored by a `contains` edge (and vice versa), edge endpoints exist, edge
    `id === "e:<kind>:<from>-><to>"`, `count === locs.length` when both present, nodes and
    edges sorted by id in UTF-8 byte order. Fix everything before telling the user it's done.
+   Exit 0 valid, 1 invalid, 2 a usage error or a missing `ajv` (it names the install
+   command). Each error quotes the offending value, so read the message rather than
+   guessing which node it means.
 4. **Iterate conversationally** — each refinement is a new graph.json. Keep ids stable: the
    viewer highlights what changed (green added, amber modified) and keeps positions, so a
    refresh moves as little as possible. For "what changed" views, reuse the same root id.
@@ -62,6 +65,12 @@ Question (if invoked with arguments): $ARGUMENTS
   `loc` is `{file, line, col?}`. `count` may stand alone on a conceptual edge.
 - IDs `<lowercase-prefix>:<stable-path>` from symbol identity, never position:
   `type:MyApp/APIClient`, `func:MyApp/APIClient.fetch(_:)`, `step:parse`, `store:cache`.
+- CHARSET: a kind and an id prefix are `[a-z][a-z0-9_]*` — lowercase letters, digits and
+  underscore. `routes_to`, never `routes-to` or `routesTo`: the edge id embeds the kind, so
+  a hyphen makes `e:<kind>:<from>-><to>` ambiguous. Applies to kinds you invent too.
+- SEPARATORS: `loc.file` and path-shaped ids use FORWARD slashes on every platform,
+  Windows included. A RELATIVE `loc.file` with a backslash is rejected; an absolute Windows
+  path (`C:\src\App.tsx`) or a UNC path is fine.
 - Exactly one node (the root) omits `parent`; it is hidden (root = canvas). Hierarchy via
   `parent` + mirrored `contains` edges renders as nesting. A `file` node is hidden only
   when it has children; a leaf `file` draws as a store.
@@ -80,6 +89,7 @@ Structural views: kinds `package|module|file|type|function|property`, edges
 `imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes`.
 Conceptual views (data flow, control flow, request lifecycles, architecture): invent kinds
 — `step:`, `store:`, `queue:`, `screen:`; edge kinds like `sends`, `mutates`, `triggers`.
+An invented kind is still `[a-z][a-z0-9_]*`: `routes_to`, not `routes-to`.
 The viewer styles unknown kinds automatically: process-like → pill, store-like
 (`store|db|queue|cache|file|config|artifact`) → open rails, containers → outline + title
 chip. Edge hue by family: calls/sends/submits blue · writes/mutates orange ·

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, "../schema2ir.mjs");
 const VALIDATE = join(here, "../../schema/validate.mjs");
 const valid = (p) => execFileSync("node", [VALIDATE, p], { encoding: "utf8" });
+// A missing sqlite3 must SKIP visibly, not pass silently: --sqlite is the path the
+// codeatlas skill tells Claude to use, and it would lose its only coverage unnoticed.
+const NO_SQLITE = !!spawnSync("sqlite3", ["-version"], { encoding: "utf8" }).error && "sqlite3 CLI not on PATH; the JSON path is covered above";
+const sqliteDb = (dir, sql) => {
+  const db = join(dir, "app.db");
+  execFileSync("sqlite3", [db, sql]);
+  return db;
+};
 
 test("JSON catalog → IR: schemas, tables, columns, indexes, foreign keys (validates)", () => {
   const dir = mkdtempSync(join(tmpdir(), "schema2ir-"));
@@ -32,7 +40,7 @@ test("JSON catalog → IR: schemas, tables, columns, indexes, foreign keys (vali
   writeFileSync(catPath, JSON.stringify(cat));
   const r = spawnSync("node", [TOOL, "--json", catPath, "-o", out], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /1 foreign-key column\(s\) point at tables or columns not in the catalog/);
+  assert.match(r.stderr, /1 foreign-key column\(s\) reference tables that are not in the catalog/);
   assert.match(valid(out), /VALID/);
   const ir = JSON.parse(readFileSync(out, "utf8"));
   assert.equal(ir.root, "db:shop");
@@ -53,17 +61,14 @@ test("JSON catalog → IR: schemas, tables, columns, indexes, foreign keys (vali
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("SQLite database → IR through the sqlite3 CLI (validates; FK to a primary key resolved)", (t) => {
-  const has = spawnSync("sqlite3", ["-version"], { encoding: "utf8" });
-  if (has.error) return t.skip("sqlite3 CLI not on PATH; the JSON path is covered above");
+test("SQLite database → IR through the sqlite3 CLI (validates; FK to a primary key resolved)", { skip: NO_SQLITE }, () => {
   const dir = mkdtempSync(join(tmpdir(), "schema2ir-sqlite-"));
-  const db = join(dir, "app.db");
-  execFileSync("sqlite3", [db, `
+  const db = sqliteDb(dir, `
     CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES users, title TEXT);
     CREATE TABLE tags (post_id INTEGER REFERENCES posts(id), name TEXT, PRIMARY KEY (post_id, name));
     CREATE INDEX posts_author ON posts(author_id);
-  `]);
+  `);
   const out = join(dir, "ir.json");
   const r = spawnSync("node", [TOOL, "--sqlite", db, "-o", out], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
@@ -151,6 +156,12 @@ test("MySQL-shaped catalogs: per-column index entries merge, dotted names never 
     "e:references:column:a.child.p2->column:a.parent.k2",
   ]);
   assert.equal(ir.nodes.find((n) => n.id === "column:a.c.ref").attrs.nullable, false, "\"NO\" is a boolean too");
+  // this catalog carries no primaryKeyOrdinal, so pairing p1/p2 against a two-column
+  // primary key is positional guesswork — it must be drawn as a guess
+  const guess = ir.annotations["e:references:column:a.child.p1->column:a.parent.k1"];
+  assert.equal(guess?.inferred, true, "a composite pairing with no key order is inferred");
+  assert.match(guess.summary, /composite primary key/);
+  assert.ok(!ir.annotations["e:references:column:a.c.ref->column:a.b.id"]?.inferred, "an explicit column list is not a guess");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -194,4 +205,229 @@ test("a catalog that would produce invalid IR is refused, not written", () => {
   assert.match(r.stderr, /duplicate node id/);
   assert.ok(!existsSync(outPath), "must not write the invalid graph");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- foreign keys must be the ones the database enforces (2026-09-10) ------------
+
+test("SQLite: a REFERENCES clause in another case still resolves — identifiers are case-insensitive", { skip: NO_SQLITE }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-case-"));
+  // the FK is real and enforced; only the SPELLING differs from CREATE TABLE
+  const db = sqliteDb(dir, `
+    CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, uid INTEGER REFERENCES Users(ID));
+  `);
+  const out = join(dir, "ir.json");
+  const r = spawnSync("node", [TOOL, "--sqlite", db, "-o", out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /skipped/, "nothing to skip: users is right there");
+  assert.match(valid(out), /VALID/);
+  const ir = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(
+    ir.edges.filter((e) => e.kind === "references").map((e) => e.id),
+    ["e:references:column:posts.uid->column:users.id"],
+    "the edge uses the catalog's spelling of the target, not the REFERENCES clause's",
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("SQLite: an implicit composite foreign key pairs in KEY order, not declaration order", { skip: NO_SQLITE }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-pkorder-"));
+  const db = sqliteDb(dir, `
+    CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (b, a));
+    CREATE TABLE child (x INTEGER, y INTEGER, FOREIGN KEY (x, y) REFERENCES parent);
+  `);
+  // ground truth from the engine itself: with parent(a=1, b=2), child(2, 1) is accepted
+  // and child(1, 2) is refused — so x pairs with b and y with a
+  execFileSync("sqlite3", [db, "PRAGMA foreign_keys=ON; INSERT INTO parent VALUES (1,2); INSERT INTO child VALUES (2,1);"]);
+  const wrongWay = spawnSync("sqlite3", [db, "PRAGMA foreign_keys=ON; INSERT INTO child VALUES (1,2);"], { encoding: "utf8" });
+  assert.notEqual(wrongWay.status, 0, "the inverted pairing must be the one the database refuses");
+  const out = join(dir, "ir.json");
+  const r = spawnSync("node", [TOOL, "--sqlite", db, "-o", out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(valid(out), /VALID/);
+  const ir = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(ir.edges.filter((e) => e.kind === "references").map((e) => e.id).sort(), [
+    "e:references:column:child.x->column:parent.b",
+    "e:references:column:child.y->column:parent.a",
+  ]);
+  // SQLite hands us the key order, so this is knowledge, not a guess
+  assert.ok(!Object.values(ir.annotations).some((a) => a.inferred), "nothing here is inferred");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("case-folded lookups: an ambiguous fold resolves to nothing, and stderr says which half is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-fold-"));
+  const cat = {
+    name: "folds",
+    tables: [
+      // quoted Postgres identifiers really are distinct, so "Users" vs "users" must not be guessed
+      { schema: "s", name: "Users", columns: [{ name: "id", primaryKey: true, primaryKeyOrdinal: 1 }] },
+      { schema: "s", name: "users", columns: [{ name: "id", primaryKey: true, primaryKeyOrdinal: 1 }] },
+      { schema: "s", name: "ambiguous", columns: [{ name: "uid" }], foreignKeys: [{ columns: ["uid"], references: { schema: "s", table: "USERS", columns: ["id"] } }] },
+      { schema: "s", name: "posts", columns: [{ name: "oid" }], foreignKeys: [{ columns: ["oid"], references: { schema: "S", table: "Orders", columns: ["ID"] } }] },
+      { schema: "s", name: "orders", columns: [{ name: "Id", primaryKey: true, primaryKeyOrdinal: 1 }] },
+      { schema: "s", name: "typo", columns: [{ name: "oid" }], foreignKeys: [{ columns: ["oid"], references: { schema: "s", table: "orders", columns: ["nosuch"] } }] },
+    ],
+  };
+  const catPath = join(dir, "cat.json");
+  const out = join(dir, "ir.json");
+  writeFileSync(catPath, JSON.stringify(cat));
+  const r = spawnSync("node", [TOOL, "--json", catPath, "-o", out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(valid(out), /VALID/);
+  const ir = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(
+    ir.edges.filter((e) => e.kind === "references").map((e) => e.id),
+    ["e:references:column:s.posts.oid->column:s.orders.Id"],
+    "the folded match uses the catalog's own spelling; the ambiguous one is dropped",
+  );
+  assert.match(r.stderr, /1 foreign-key column\(s\) reference tables that are not in the catalog/);
+  assert.match(r.stderr, /1 foreign-key column\(s\) reference columns their target table does not have/);
+  assert.match(ir.description, /2 foreign-key column\(s\) skipped/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("edge endpoints survive an identifier containing '->'", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-arrow-"));
+  const cat = { name: "arrow", tables: [
+    { name: "u", columns: [{ name: "v", primaryKey: true }] },
+    { name: "q->column:r", columns: [{ name: "s" }], foreignKeys: [{ columns: ["s"], references: { table: "u", columns: ["v"] } }] },
+  ] };
+  const catPath = join(dir, "cat.json");
+  const out = join(dir, "ir.json");
+  writeFileSync(catPath, JSON.stringify(cat));
+  const r = spawnSync("node", [TOOL, "--json", catPath, "-o", out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(valid(out), /VALID/);
+  const edge = JSON.parse(readFileSync(out, "utf8")).edges.find((e) => e.kind === "references");
+  assert.equal(edge.from, "column:q->column:r.s");
+  assert.equal(edge.to, "column:u.v");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- what a bad input looks like (2026-09-10) -----------------------------------
+
+test("a catalog that is not JSON is named, not dumped: no stack trace, no 849 KB of stderr", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-badjson-"));
+  const catPath = join(dir, "cat.json");
+  const tables = Array.from({ length: 20_000 }, (_, i) => ({ name: `t${i}`, columns: [{ name: "c" }] }));
+  writeFileSync(catPath, JSON.stringify({ name: "x", tables }).slice(0, -30)); // truncated export
+  const r = spawnSync("node", [TOOL, "--json", catPath, "-o", join(dir, "out.json")], { encoding: "utf8", maxBuffer: 1 << 30 });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /cat\.json is not valid JSON/);
+  assert.doesNotMatch(r.stderr, /node:internal|at JSON\.parse/, "no Node stack");
+  assert.ok(r.stderr.length < 2_000, `stderr was ${r.stderr.length} bytes of the user's schema`);
+  assert.ok(!existsSync(join(dir, "out.json")));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a catalog with a BOM or in UTF-16LE is read, not rejected (PowerShell redirection)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-bom-"));
+  const cat = JSON.stringify({ name: "enc", tables: [{ name: "t", columns: [{ name: "c" }] }] });
+  const run = (file) => spawnSync("node", [TOOL, "--json", join(dir, file)], { encoding: "utf8" });
+  writeFileSync(join(dir, "bom.json"), "﻿" + cat);
+  writeFileSync(join(dir, "u16.json"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(cat, "utf16le")]));
+  for (const f of ["bom.json", "u16.json"]) {
+    const r = run(f);
+    assert.equal(r.status, 0, `${f}: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).root, "db:enc", f);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a mis-shaped catalog names the offending table; a flag without a value names the flag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-shape-"));
+  const shapes = [
+    [{ tables: "nope" }, /`tables` must be an array/],
+    [{ tables: [null] }, /tables\[0\] is not an object/],
+    [{ tables: [{ name: "ok", columns: [{ name: "c" }] }, { columns: [] }] }, /tables\[1\] has no `name`/],
+    [{ tables: [{ name: "t", columns: { a: 1 } }] }, /tables\[0\] \(t\): `columns` must be an array/],
+    [{ tables: [{ name: "t", foreignKeys: [null] }] }, /tables\[0\] \(t\): foreignKeys\[0\] is not an object/],
+    [{ tables: [{ name: "t", columns: [{ nam: "c" }] }] }, /tables\[0\] \(t\): columns\[0\] has no `name`/],
+    // one nesting level down: the table-level arrays were checked, their contents were not,
+    // so `ix.columns.join(",")` and the FK column pairing still crashed on a hand-written catalog
+    [{ tables: [{ name: "t", indexes: [{ name: "i", columns: "c" }] }] }, /tables\[0\] \(t\): indexes\[0\]\.columns must be an array/],
+    [{ tables: [{ name: "t", foreignKeys: [{ columns: "c", references: { table: "u" } }] }] }, /tables\[0\] \(t\): foreignKeys\[0\]\.columns must be an array/],
+    [{ tables: [{ name: "t", foreignKeys: [{ columns: ["c"], references: "u" }] }] }, /tables\[0\] \(t\): foreignKeys\[0\]\.references must be an object/],
+    [{ tables: [{ name: "t", foreignKeys: [{ columns: ["c"], references: { table: "u", columns: "d" } }] }] }, /foreignKeys\[0\]\.references\.columns must be an array/],
+    [["not", "an", "object"], /must be a JSON object with a `tables` array/],
+    [{ name: "x" }, /no `tables` array/],
+  ];
+  const catPath = join(dir, "cat.json");
+  const outPath = join(dir, "out.json");
+  for (const [cat, expected] of shapes) {
+    writeFileSync(catPath, JSON.stringify(cat));
+    const r = spawnSync("node", [TOOL, "--json", catPath, "-o", outPath], { encoding: "utf8" });
+    assert.equal(r.status, 1, JSON.stringify(cat));
+    assert.match(r.stderr, expected);
+    assert.doesNotMatch(r.stderr, /node:internal|TypeError/, "a shape error is not a crash");
+    assert.ok(!existsSync(outPath), "nothing written");
+  }
+  for (const argv of [["--sqlite"], ["--json"], ["--json", catPath, "-o"], ["--json", catPath, "--name"], ["--sqlite", "--json", catPath]]) {
+    const r = spawnSync("node", [TOOL, ...argv], { encoding: "utf8" });
+    assert.equal(r.status, 2, argv.join(" "));
+    assert.match(r.stderr, /needs a value/);
+    assert.match(r.stderr, /usage: schema2ir/);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("an sqlite3 too old for -json says so instead of leaving the flag error unexplained", { skip: process.platform === "win32" && "needs a POSIX shell for the stub" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-old-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const stub = (version, error) => writeFileSync(join(bin, "sqlite3"), `#!/bin/sh\nif [ "$1" = "-version" ]; then echo "${version} 2020-01-27 19:55:54"; exit 0; fi\necho "sqlite3: Error: ${error}" >&2\nexit 1\n`, { mode: 0o755 });
+  const run = () => spawnSync("node", [TOOL, "--sqlite", join(dir, "any.db")], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+
+  stub("3.31.1", "unknown option: -json");
+  const old = run();
+  assert.equal(old.status, 1);
+  assert.match(old.stderr, /unknown option: -json/);
+  assert.match(old.stderr, /your sqlite3 is 3\.31\.1; .*needs 3\.33 or newer/);
+  assert.match(old.stderr, /--json/, "and points at the escape hatch");
+
+  // a current sqlite3 failing for its own reasons must not be blamed on its version
+  stub("3.54.0", "no such table: x");
+  const fine = run();
+  assert.equal(fine.status, 1);
+  assert.match(fine.stderr, /no such table: x/);
+  assert.doesNotMatch(fine.stderr, /3\.33 or newer/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("per-column index entries merge back into index order, not row order", () => {
+  // MySQL emits one STATISTICS row per index column with SEQ_IN_INDEX; JSON_ARRAYAGG
+  // promises no order, so the ordinal is what puts (a, b, c) back together
+  const ir = catalogToIR({
+    name: "ix",
+    tables: [{ name: "t", columns: [{ name: "a" }, { name: "b" }, { name: "c" }], indexes: [
+      { name: "abc", columns: ["c"], unique: 0, ordinal: 3 },
+      { name: "abc", columns: ["a"], unique: 0, ordinal: 1 },
+      { name: "abc", columns: ["b"], unique: 0, ordinal: 2 },
+      { name: "noord", columns: ["b"], unique: 1 },
+      { name: "noord", columns: ["a"], unique: 0 },
+    ] }],
+  });
+  const idx = ir.nodes.filter((n) => n.kind === "index");
+  assert.deepEqual(idx.map((n) => [n.name, n.attrs.columns, n.attrs.unique]), [
+    ["abc", "a,b,c", false],
+    ["noord", "b,a", true], // no ordinals: the export's own order stands
+  ]);
+  assert.deepEqual(validateIR(ir), []);
+});
+
+// `catalogToIR` is exported, so a caller can skip the CLI's checkCatalog. A column whose
+// name is a JSON number then reached foldIndex, where `k.toLowerCase()` threw a TypeError
+// — a crash where the old code returned a graph.
+test("catalogToIR survives a non-string column name instead of throwing", () => {
+  const cat = {
+    tables: [
+      { name: "t", columns: [{ name: 1 }, { name: "ok" }] },
+      { name: "u", columns: [{ name: "fk" }], foreignKeys: [{ columns: ["fk"], references: { table: "t", columns: ["ok"] } }] },
+    ],
+  };
+  const ir = catalogToIR(cat, { name: "m" });
+  assert.equal(ir.irVersion, "0.2");
+  assert.ok(ir.nodes.some((n) => n.kind === "column"));
+  assert.deepEqual(validateIR(ir), [], "and the graph it returns is still valid IR");
 });

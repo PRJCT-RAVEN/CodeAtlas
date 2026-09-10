@@ -48,24 +48,50 @@ const defaulted = new Set<string>();
 const autoChosen = new Set<string>();
 /** Display depths the budget collapsed for this root — newcomers at those depths are collapsed too. */
 const autoLevels = new Set<number>();
+/** Did the previous graph under this root fit the budget outright? */
+let lastFitted = false;
 let defaultedRoot: string | null = null;
 
-function applyDefaults(ir: GraphIR, collapsed: Set<string>, budget: BudgetOptions, ids: ReadonlySet<string>): { collapsed: Set<string>; info: BudgetInfo } {
+function applyDefaults(ir: GraphIR, collapsed: Set<string>, budget: BudgetOptions, ids: ReadonlySet<string>, hasKids: ReadonlySet<string>): { collapsed: Set<string>; info: BudgetInfo } {
   // a different view root starts from scratch (and keeps the sets bounded)
   if (defaultedRoot !== ir.root) {
     defaulted.clear();
     autoChosen.clear();
     autoLevels.clear();
+    lastFitted = false;
     defaultedRoot = ir.root;
   }
-  // a container that left the graph and comes back is new again: it must get
-  // its default/budget treatment instead of rendering expanded among chips
-  for (const id of [...defaulted]) if (!ids.has(id)) defaulted.delete(id);
-  for (const id of [...autoChosen]) if (!ids.has(id)) autoChosen.delete(id);
+  // a container that left the graph and comes back — or that became a leaf and grew
+  // children again — is new again: it must get its default/budget treatment instead
+  // of rendering expanded among chips
+  const stale = (id: string) => !ids.has(id) || !hasKids.has(id);
+  for (const id of [...defaulted]) if (stale(id)) defaulted.delete(id);
+  for (const id of [...autoChosen]) if (stale(id)) autoChosen.delete(id);
   const next = new Set(collapsed);
+  // A graph that cannot exceed the budget needs none of the LAST one's budget
+  // decisions. CLAUDE.md asks authors to keep the root id stable across refinements,
+  // so the four-node view that follows a 100k-node one arrives here with the big
+  // view's collapsed depths and ids still remembered, and would render as chips.
+  // Only CROSSING back inside the budget releases them: a view that has fitted all
+  // along may hold collapses the user asked for with "Collapse to fit".
+  const fits = ir.nodes.length <= budget.maxVisible && ir.edges.length <= budget.maxEdges;
+  if (fits && !lastFitted) {
+    autoLevels.clear();
+    for (const id of autoChosen) {
+      next.delete(id);
+      defaulted.delete(id);
+    }
+    autoChosen.clear();
+  }
+  lastFitted = fits;
   const ann = ir.annotations ?? {};
   for (const [id, a] of Object.entries(ann)) {
-    if (a?.collapsedByDefault === true && !defaulted.has(id)) {
+    // `hasKids` and not just `ids`: an author default on a node that has no children
+    // seeds `collapsed` with an id that renders as a "+" chip advertising children it
+    // does not have. Without this the chip came BACK one poll after the user clicked it
+    // away, because pruning that id out of `defaulted` is exactly what lets this loop
+    // re-add it. A node that later grows children gets its default then, as intended.
+    if (a?.collapsedByDefault === true && hasKids.has(id) && !defaulted.has(id)) {
       next.add(id);
       defaulted.add(id);
     }
@@ -97,10 +123,15 @@ export const useAtlas = create<AtlasState>((set) => ({
   setIR: (ir, source) =>
     set((s) => {
       const ids = new Set(ir.nodes.map((n) => n.id));
-      // prune state that points at nodes which no longer exist (a formerly
-      // collapsed container that became a leaf would otherwise render as "+")
-      const pruned = new Set([...s.collapsed].filter((id) => ids.has(id)));
-      const { collapsed, info } = applyDefaults(ir, pruned, s.budget, ids);
+      // Prune state that points at nodes which no longer exist, AND at containers that
+      // became leaves: both render as a "+" chip that advertises children it does not
+      // have (and whose only recovery is a click that looks like an expand). Children
+      // are counted from IR parents, not display ones, so a container holding nothing
+      // but a hidden grouping `file` node still counts as a container.
+      const hasKids = new Set<string>();
+      for (const n of ir.nodes) if (n.parent !== undefined) hasKids.add(n.parent);
+      const pruned = new Set([...s.collapsed].filter((id) => ids.has(id) && hasKids.has(id)));
+      const { collapsed, info } = applyDefaults(ir, pruned, s.budget, ids, hasKids);
       return {
         ir,
         delta: diffIR(s.ir, ir),
@@ -120,8 +151,11 @@ export const useAtlas = create<AtlasState>((set) => ({
       // Target the SMALLER of the budget and the render guard: someone who raised
       // ?budget= past the guard still gets a fast view when they click the button,
       // instead of it appearing to do nothing.
+      // `force`: the automatic pass refuses a fold that would hide most of the view, which
+      // made this button a silent no-op in the 801..2*budget band — the exact band where
+      // the render warning offers it. An explicit request overrides the guard.
       const target = { maxVisible: Math.min(s.budget.maxVisible, RENDER_WARN), maxEdges: s.budget.maxEdges };
-      const r = autoCollapse(s.ir, s.collapsed, target, new Set(), new Set());
+      const r = autoCollapse(s.ir, s.collapsed, target, new Set(), new Set(), true);
       const collapsed = new Set(s.collapsed);
       for (const id of r.collapse) {
         collapsed.add(id);

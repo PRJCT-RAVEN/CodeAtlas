@@ -35,16 +35,31 @@ To try a checkout without installing: `claude --plugin-dir /path/to/codeatlas`.
 
 ### Controlling the viewer by hand
 
-`/codeatlas:viewer start|stop|status|open|paths`, or directly:
+`/codeatlas:viewer start|stop|restart|status|open|paths`, or directly:
 
 ```sh
 bin/codeatlas-viewer start     # installs deps on first run, starts vite on :5173, prints paths
 bin/codeatlas-viewer status    # up/down + pid (exit 1 when down)
+bin/codeatlas-viewer restart   # stop + start — how a plugin update reaches a running viewer
 bin/codeatlas-viewer stop
-bin/codeatlas-viewer paths     # PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG
+bin/codeatlas-viewer paths     # PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG / STOP
 ```
 
 On Windows use `bin\codeatlas-viewer.cmd` (or the shell shim under Git Bash / WSL).
+
+A running viewer never reloads its `node_modules`, so after a plugin update it keeps
+serving the packages it started with. `start` and `status` notice and print a NOTE;
+`restart` applies the update. `restart` only touches a viewer this launcher started — it
+exits 2 rather than kill one you started another way.
+
+Two starts at once (two Claude sessions, or the `codeatlas` and `viewer` skills together)
+are safe: the second waits for the first instead of racing it for the port.
+
+The viewer answers on `http://localhost:5173`, `http://127.0.0.1:5173` and
+`http://[::1]:5173`. It is bound to loopback only and is not reachable from another
+machine — this is deliberate, because "Open in editor" launches programs on your machine.
+A `[codeatlas] no IPv6 loopback listener on [::1]:5173 …` line in the log just means the
+machine has no IPv6; IPv4 keeps serving.
 
 ### Environment
 
@@ -268,11 +283,15 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 ```
 
 > **macOS privacy caveat.** A launchd-spawned process does not inherit your terminal's
-> access to the TCC-protected folders (`~/Documents`, `~/Desktop`, `~/Downloads`). Keep the
-> checkout outside them; inside them `serve.sh` fails with `Operation not permitted`
-> (exit 126). Alternatives: grant Full Disk Access to your `node` binary (per-path, and it
-> lapses silently on a node upgrade), or `nohup tools/serve.sh &` from a terminal, which
-> survives the Claude session but not a reboot.
+> access to the TCC-protected folders (`~/Documents`, `~/Desktop`, `~/Downloads`), so an
+> agent installed from a checkout inside one can never start the viewer. `install-launchd.sh`
+> therefore REFUSES such a path (exit 1, naming the move; the check is case-insensitive, as
+> the filesystem is) unless you pass `--force`. If an agent is somehow already installed
+> from one, `tools/serve.sh` logs `cannot read …/viewer — TCC-protected folder … not
+> starting` and exits 0, so launchd leaves it alone instead of relaunching it every 10 s
+> forever. Alternatives: move the checkout (simplest), grant Full Disk Access to your `node`
+> binary (per-path, and it lapses silently on a node upgrade), or `nohup tools/serve.sh &`
+> from a terminal, which survives the Claude session but not a reboot.
 
 ---
 
@@ -290,4 +309,8 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 | "Open in editor" says `cannot resolve to an existing file` | usually a missing file, or a loc outside the root the graph names (`attrs.absRoot`). Add the directory to `CODEATLAS_ROOTS` if the graph has no root. System paths are refused by design |
 | "Open in editor" opens the wrong app | set `CODEATLAS_EDITOR`, e.g. `code -g {file}:{line}` |
 | A huge graph opens nearly empty | that's the visibility budget — expand containers, or raise it with `?budget=2000,3000` |
+| A view sits a little over the budget I set | on purpose. The budget will not fold a container away when doing so would hide more than half of what is on screen — a few nodes over beats one box with everything inside it. "Collapse to fit" overrides that when you ask explicitly |
+| `NOTE — the viewer's dependencies changed since it started` | a plugin update landed under a running viewer. Run `codeatlas-viewer restart` |
+| Nothing happens when I click a node / I can't reach one with the keyboard | every node is a tab stop: Tab to it, Enter or Space to select (and expand/collapse a container), Escape to close the details panel |
+| `[::1]:5173 is already in use by another process` | something else holds the IPv6 loopback port. Because `localhost` usually resolves to `::1` first, the viewer refuses to start rather than let that address point at someone else's server — stop it, or use `CODEATLAS_PORT` |
 | `schema2ir` fails on SQLite | needs the `sqlite3` CLI on PATH (3.33+ for `-json`) |

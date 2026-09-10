@@ -14,19 +14,22 @@ Requires [Claude Code](https://claude.com/claude-code) and Node.js ≥ 20. Insid
 /plugin install codeatlas@codeatlas
 ```
 
+The viewer is loopback-only: `http://localhost:5173`, `http://127.0.0.1:5173` and
+`http://[::1]:5173` all reach it, nothing else on the network does.
+
 Then, in any project, just ask: *"map this codebase"*, *"show the data flow through auth"*,
 *"what depends on NetworkClient?"*. Claude starts the viewer (`http://localhost:5173`,
 first run installs the viewer's npm dependencies), reads your code, and draws a validated
 graph in which every node links to a `file:line` you can open in your editor. Refine it
 conversationally; each answer is a new graph rendered live.
 
-- `/codeatlas:viewer start|stop|status|open` controls the viewer by hand.
+- `/codeatlas:viewer start|stop|restart|status|open` controls the viewer by hand. After a
+  plugin update, `restart` — a running viewer keeps serving the packages it started with.
 - Graphs are kept in `~/.codeatlas/live/` (`CODEATLAS_DATA` to move them); the port is
   `CODEATLAS_PORT` (default 5173).
 - "Open in editor" uses `CODEATLAS_EDITOR` if set (`code -g {file}:{line}`,
   `subl {file}:{line}`, …); otherwise Xcode on macOS, VS Code elsewhere, then a plain
   text editor (`open -t` / `xdg-open` / Notepad; never for executables). It only opens
-  files under the project being drawn; set
   files inside the project the graph names — on any drive, so a repo outside your home
   directory works unconfigured — never system locations. `CODEATLAS_OPEN_HOME=1` also allows
   anything under your home directory.
@@ -35,7 +38,8 @@ conversationally; each answer is a new graph rendered live.
 - Big graphs are fine: the viewer lays out only what is expanded. A 100k-node schema opens
   as its top-level containers in under a second, expands one level at a time, and search
   looks inside collapsed containers. `?budget=N` on the viewer URL changes how much starts
-  visible (default 600 nodes / 800 edges).
+  visible (default 600 nodes / 800 edges) — the viewer treats those as targets, not hard
+  limits, and will sit slightly over one rather than collapse a view down to a single box.
 - Light and dark themes follow your OS; the ☀/☾ button in the viewer overrides it. For
   your own colours, copy `docs/theme.example.css` to `~/.codeatlas/theme.css` and edit the
   tokens you care about (it survives plugin updates).

@@ -9,7 +9,12 @@
 // keeps its polyline. Edges touching moved or new nodes fall back to plain
 // curves. "Tidy" (a full relayout) restores the routed picture on demand; the
 // next graph change relays out in full anyway. Used by App only when the last
-// full layout was expensive, so small views keep their routed quality.
+// full layout was expensive OR the view is large (INCREMENTAL_MIN_MS /
+// INCREMENTAL_MIN_NODES), so small views keep their routed quality. DENSE views
+// are NOT excluded: App applies the same rule to them and never consults
+// `mode.dense`, so a dense view past INCREMENTAL_MIN_NODES is spliced like any
+// other (measured: expanding a schema in the 40-chip overview of a 104k-node
+// file, 344 ms).
 
 import {
   buildDisplay,
@@ -36,6 +41,23 @@ function absolute(nodes: DisplayNode[]): Abs {
     abs.set(n.ir.id, { x: (p?.x ?? 0) + n.x, y: (p?.y ?? 0) + n.y, w: n.width, h: n.height });
   }
   return abs;
+}
+
+/**
+ * IR children by parent id, in `ir.nodes` order. Appending in place matters:
+ * rebuilding each sibling array (`[...(kids.get(p) ?? []), id]`) is O(k²) per
+ * parent, which cost 330 ms on a 20,000-column table — on the path chosen
+ * precisely because the graph is big.
+ */
+export function childIndex(ir: GraphIR): Map<string, string[]> {
+  const kids = new Map<string, string[]>();
+  for (const n of ir.nodes) {
+    if (!n.parent) continue;
+    const arr = kids.get(n.parent);
+    if (arr) arr.push(n.id);
+    else kids.set(n.parent, [n.id]);
+  }
+  return kids;
 }
 
 /** Ids of `id` and every display descendant in `nodes` (parentId chains). */
@@ -123,8 +145,7 @@ export async function incrementalToggle(
     // mini graph rooted at the toggled node: its descendants, plus the edges among them
     const inside = new Set<string>();
     const stack = [toggled];
-    const kids = new Map<string, string[]>();
-    for (const n of ir.nodes) if (n.parent) kids.set(n.parent, [...(kids.get(n.parent) ?? []), n.id]);
+    const kids = childIndex(ir);
     while (stack.length) {
       const id = stack.pop()!;
       if (inside.has(id)) continue;
@@ -137,6 +158,11 @@ export async function incrementalToggle(
       nodes: ir.nodes.filter((n) => inside.has(n.id)),
       edges: ir.edges.filter((e) => inside.has(e.from) && inside.has(e.to)),
     };
+    // The mini graph makes its OWN tier/density decision, so a subtree spliced
+    // into a dense parent view can come back orthogonally routed with inline
+    // chips. Harmless (the parent's mode still decides how App draws them, and
+    // the subtree is small by construction) but it is why the two halves of the
+    // picture can look different until "Tidy".
     const sub = await layoutGraph(mini, collapsed, { labelFor: opts.labelFor });
     let maxX = 0;
     let maxY = 0;
@@ -162,7 +188,9 @@ export async function incrementalToggle(
   for (const n of prev.nodes) {
     if (n.ir.id === toggled) {
       nodes.push(c);
-      nodes.push(...subNodes);
+      // a loop, not `push(...subNodes)`: expanding one very large container passes one
+      // argument per node, which throws RangeError instead of laying out
+      for (const sn of subNodes) nodes.push(sn);
     } else if (!oldSubtree.has(n.ir.id)) {
       nodes.push({ ...n });
     }

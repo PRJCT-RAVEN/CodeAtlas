@@ -276,6 +276,24 @@ test("directory listing and ids use UTF-8 byte order (U+FF01 before U+1F600)", (
   });
 });
 
+test(
+  "names an IR id or a relative loc cannot carry are counted, never emitted",
+  { skip: WIN && "newlines and backslashes are illegal in Windows filenames" },
+  () => {
+    withTmp("fs2ir-badnames-", (dir) => {
+      writeFileSync(join(dir, "we\nird.txt"), "1");   // a line terminator can never appear in an id
+      writeFileSync(join(dir, "back\\slash.txt"), "1"); // a backslash breaks the relative-loc contract
+      mkdirSync(join(dir, "sub\rdir"));
+      writeFileSync(join(dir, "sub\rdir", "inner.txt"), "1");
+      writeFileSync(join(dir, "fine.txt"), "1");
+      const ir = run(dir);
+      assert.deepEqual(ir.nodes.map((n) => n.id), ["dir:.", "doc:fine.txt"]);
+      assert.deepEqual(ir.nodes[0].attrs.skipped, { unrepresentable: 3 });
+      validate(ir); // used to emit an IR its own validator rejected, naming no path
+    });
+  }
+);
+
 test("symlinks become link nodes with attrs.target (dir and file links, not followed)", (t) => {
   withTmp("fs2ir-links-", (dir) => {
     mkdirSync(join(dir, "real"));

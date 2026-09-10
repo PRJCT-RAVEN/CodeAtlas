@@ -23,8 +23,21 @@ React Flow) — never attempt layout or coordinates yourself.
    registers it as a launchd user agent (KeepAlive on non-zero exit only; `serve.sh` exits 0
    when :5173 is already answering, so no relaunch storms). Caveat: macOS TCC blocks
    launchd-spawned processes from `~/Documents`, `~/Desktop` and `~/Downloads`, so the
-   checkout must live outside them. Fallback if the agent is ever unavailable:
+   checkout must live outside them — `install-launchd.sh` REFUSES such a path (exit 1,
+   case-insensitively; `--force` for anyone who has granted Full Disk Access), and if an
+   agent is installed from one anyway, `serve.sh` exits 0 with a `cannot read …/viewer`
+   log line rather than the non-zero exit that made launchd relaunch it every 10 s. The
+   plist deliberately sets no `WorkingDirectory`: launchd chdir()s BEFORE it execs, so
+   pointing it into the checkout defeated that guard before the script could run.
+   Fallback if the agent is ever unavailable:
    `nohup tools/serve.sh &` (survives the Claude session, not a reboot).
+   The socket is LOOPBACK-ONLY and must stay that way (`/open` shells out): vite binds
+   `127.0.0.1` and a best-effort twin listener answers `[::1]` on the same port, so
+   `localhost`, `127.0.0.1` and `[::1]` all work — which matters for curl, scripts and
+   anything that does not retry the other address family. Never `--host` / `0.0.0.0` / `::`.
+   No IPv6 on the machine → a `[codeatlas] no IPv6 loopback listener…` warning and IPv4
+   keeps serving; something ELSE holding `[::1]:<port>` is fatal, because `localhost` would
+   then resolve to it and reach a server that is not this viewer.
    PLUGIN MODE (end users, see "Plugin packaging" below): `bin/codeatlas-viewer start`
    runs the same vite with `CODEATLAS_LIVE_DIR=~/.codeatlas/live`, and the `codeatlas`
    skill stages/publishes there instead of `viewer/public/live/` — same loop, different dir.
@@ -35,6 +48,13 @@ React Flow) — never attempt layout or coordinates yourself.
    when both present, nodes/edges sorted by id in UTF-8 byte order. Fix anything invalid
    before telling the user it's done — the viewer's own guard keeps the LAST GOOD graph on
    screen and names the problem in its status bar, but an invalid file is still a failure.
+   Exit codes: 0 valid, 1 invalid, 2 a USAGE error — or the validator's own dependency
+   (ajv) missing, in which case it names the install command instead of dying with a
+   module-resolution stack. Each schema error quotes the offending value
+   (`/nodes/8/id must match pattern "…" — got "doc:we\nird.txt"`, JSON-quoted so an
+   unprintable character cannot break the one-error-per-line output), and past 200 schema
+   errors the listing is capped — the trailing `… and N more` counts every real problem,
+   not just the ones that were formatted.
 5. Iterate conversationally — each refinement is just a new graph.json. Keep ids stable:
    the viewer highlights what changed (green = added, amber = modified, removed count in
    the status bar) and keeps previous positions (per root id, in localStorage + an
@@ -53,6 +73,13 @@ React Flow) — never attempt layout or coordinates yourself.
 - IDs: `<lowercase-prefix>:<stable-path>`, e.g. `type:MyApp/APIClient`,
   `func:MyApp/APIClient.fetch(_:)`. Derive from symbol identity, NEVER from position —
   stable IDs are what make live updates smooth instead of a reshuffle.
+- CHARSET: a kind and an id prefix are lowercase letters, digits and underscore only
+  (`[a-z][a-z0-9_]*`) — `routes_to`, never `routes-to` or `routesTo`. The edge id embeds
+  the kind, so a hyphen would make `e:<kind>:<from>-><to>` ambiguous; the validator now
+  reports a bad kind on `/edges/N/kind`, not only on the id.
+- SEPARATORS: `loc.file` and path-shaped ids use FORWARD slashes on every platform,
+  Windows included. The validator rejects a RELATIVE `loc.file` containing a backslash;
+  absolute Windows paths (`C:\src\App.tsx`) and UNC paths are accepted as-is.
 - Sort nodes and edges by id in UTF-8 BYTE order — in node
   `arr.sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id)))`, not plain
   `<` (UTF-16). Exactly one node (the root) omits `parent`.
@@ -74,7 +101,8 @@ Structural views: kinds `package|module|file|type|function|property` and edge ki
 `imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes`.
 Conceptual views (dataflow, control flow, request lifecycles, architecture): invent
 kinds — `step:`, `store:`, `queue:`, `screen:`, edge kinds like `sends`, `mutates`,
-`triggers`. The viewer derives styling for unknown kinds automatically.
+`triggers`. The viewer derives styling for unknown kinds automatically. An invented kind
+still obeys the charset rule above: `[a-z][a-z0-9_]*`, so `routes_to`, not `routes-to`.
 
 File-structure views: `node tools/fs2ir.mjs <root> [--depth N] [--max-children M]
 [--sizes] -o viewer/public/live/graph.json` walks a directory into IR — `dir`
@@ -84,7 +112,9 @@ truncation — never truncate silently; the root's overflow id is `overflow:.`).
 Locs are root-relative and the root node carries `attrs.absRoot` (pass `--abs-locs` for
 absolute paths) — same convention as the repo-relative locs in code graphs. Symlinks
 become `link` nodes (`attrs.target`), never dropped; FIFOs/sockets/unreadable dirs are
-counted in the parent dir's `attrs.skipped`. A nonexistent root or a bad `--depth` is a
+counted in the parent dir's `attrs.skipped`, which now also carries `unrepresentable` —
+entries whose NAME holds a line terminator or a backslash, which no IR id or relative loc
+can carry. Counted, never dropped silently. A nonexistent root or a bad `--depth` is a
 non-zero exit, not an empty graph. Containers whose entire visible subtree is edge-free
 lay out via rectpacking automatically, so pure trees render as grids, not one endless
 row; any edge touching a descendant keeps the container in ELK layered.
@@ -131,6 +161,10 @@ last poll error, delta counts). Click any node to select it (details panel with 
 loc, attrs, metrics, importance, "Open in editor" and the server's reply); clicking a
 container also collapses/expands it (the details panel has an Expand/Collapse button
 too). MiniMap (bottom-right, collapsible like the Key) only up to 200 visible nodes; nodes are not draggable.
+Keyboard (2026-09-10): every node is a tab stop with an accessible name
+(`<kind> <name>[, collapsed]`) and `aria-expanded` on the ones that toggle; Enter/Space
+selects a node and expands/collapses a container; Escape closes the details panel, except
+while a text field has focus, where it belongs to the field. Edges are not tab stops.
 Node maps live in `viewer/src/App.tsx` (KIND_SLOT → `--accent-N`/`--pastel-N`), the edge-family
 table in `viewer/src/ir/families.ts` (style + layout direction, shared by App/Key/elk),
 treatments in `styles.css`, layout in `viewer/src/layout/elk.ts`, `/open` in
@@ -159,12 +193,29 @@ and the generic opener is never handed an executable or a run-on-open type.
 
 The file may be huge (100k nodes / 25 MB tested); the viewer only lays out and renders
 what is VISIBLE, so size is governed by what is expanded, not by the file:
-- **Visibility budget** (`viewer/src/ir/budget.ts`): on first sight of a root, whole depth
-  levels are collapsed deepest-first (every table before any schema) until ≤ 600 visible
-  nodes and ≤ 800 display edges (`?budget=N[,E]` overrides). Author `collapsedByDefault`
-  and the user's own expands are never revisited. Status bar: "N auto-collapsed · showing
-  X/Y". So author big graphs as containers (schema > table > column, module > type >
-  member): a flat 5,000-child container cannot be budgeted and expands to a 5,000-node view.
+- **Visibility budget** (`viewer/src/ir/budget.ts`): on first sight of a root, depth levels
+  are collapsed deepest-first (every table before any schema) until ≤ 600 visible nodes and
+  ≤ 800 display edges (`?budget=N[,E]` overrides). Author `collapsedByDefault` and the
+  user's own expands are never revisited. Status bar: "N auto-collapsed · showing X/Y". So
+  author big graphs as containers (schema > table > column, module > type > member): a flat
+  5,000-child container cannot be budgeted and expands to a 5,000-node view.
+  Two refinements make the numbers approximate ON PURPOSE (2026-09-10) — do not "fix" a
+  view that sits a little over its cap:
+  - The SHALLOWEST level it touches folds only as far as it must (largest subtrees first),
+    so a level can be partly folded and "N auto-collapsed" no longer implies a uniform one.
+  - A fold that would hide more than half a view already within 2× of a cap is refused
+    outright, in BOTH the node and the edge phase. A 600-table single-schema import
+    therefore lands on 601 visible nodes and ~1,190 display edges — over both caps — rather
+    than on the one chip it used to become. The edge cap is the one that yields, because
+    `layoutTier` already has a cheaper tier for edge overflow and no tier can recover
+    context that has been folded away. `DEFAULT_BUDGET.maxEdges` (800) is deliberately the
+    same number as `FASTEST_EDGES` in `layout/elk.ts`: a budgeted view stays inside the tier
+    that still routes edges orthogonally, which is why the cap was NOT simply raised.
+  "Collapse to fit" is the user asking explicitly, so it overrides the refusal (`force`) —
+  otherwise the button was a no-op in exactly the band where the render warning offers it.
+  Keeping the root id stable across refinements is safe: when a graph arrives that cannot
+  exceed the budget, the store releases the previous view's remembered depths and
+  auto-collapsed ids, so a four-node follow-up under a big view's root renders expanded.
 - **Layout tiers** (`layoutTier` in `elk.ts`): quality (≤ 400 nodes and ≤ 400 edges:
   network-simplex placement, orthogonal routing, ELK inline labels + label pass) · fast
   (≤ 1,500 nodes, ≤ 800 edges: longest-path layering, simple placement, thoroughness 1) ·
@@ -177,9 +228,10 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   30,000 px row. `LayoutResult.mode` reports tier/dense/heavy.
 - **Render guard**: above 800 VISIBLE nodes the status bar warns and offers "collapse to
   fit", which re-applies the budget to the current view (targeting the smaller of the
-  budget and the guard, so it still helps when `?budget=` was raised). The automatic pass
-  never revisits a container the user opened — undoing their click would be hostile — so
-  this is the on-demand form of PROJECT_SPEC §3(C)/N4's forced-collapse cap.
+  budget and the guard, so it still helps when `?budget=` was raised, and overriding the
+  anti-gutting refusal, so it is never a silent no-op). The automatic pass never revisits a
+  container the user opened — undoing their click would be hostile — so this is the
+  on-demand form of PROJECT_SPEC §3(C)/N4's forced-collapse cap.
 - **Polling** is conditional (ETag → 304; `/live` cap 256 MB): an unchanged 25 MB graph
   costs one 304 per second. **Search** counts matches inside collapsed containers ("+N
   hidden") and keeps their container lit. Above 800 visible nodes node shadows are dropped
@@ -189,7 +241,11 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   200-table schema 1.7 s; 603 visible tables: load 0.9 s, pan 93 ms; 1,005: 1.1 s / 250 ms;
   2,010: 2.0 s / 0.7 s; 4,020 (budget overridden): 7.6 s and multi-second pans — the budget
   exists so nobody lands there. Benchmark aids: `?budget=`, `?culling=0`; the generator is
-  `db()` in `viewer/tests/budget.test.ts`.
+  `db()` in `viewer/tests/budget.test.ts`. Budget operating point after 2026-09-10: a
+  600-table single-schema import → 601 visible / 1,191 display edges (headless ELK 1.06 s,
+  `fastest` tier); a 3-schema 7,803-node graph → 403 visible / 673 edges. The pass itself is
+  linear in depth levels (its counts are maintained incrementally): a 10k-deep chain went
+  1.5 s → 19 ms, a 20k-deep one 5.7 s → 26 ms.
 - **Incremental relayout** (`viewer/src/layout/incremental.ts`): when one container is
   toggled and the last full pass was expensive (> 300 ms or > 400 visible nodes), only that
   container's subtree goes through ELK; it is spliced into the previous layout, neighbours
@@ -198,15 +254,20 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   the rest become plain curves. The status bar says "approximate layout · tidy"; tidy runs
   a full pass. Unchanged React Flow node/edge objects are reused across passes so React
   Flow skips their DOM. Measured (headless): a toggle in a routed 302-table view 1,003 ms →
-  198 ms; dense views already relay out in ~350 ms, so they stay on the full path.
-  `?incremental=0|1` forces the path for benchmarking.
+  198 ms. The path is chosen by cost alone (`INCREMENTAL_MIN_MS` / `INCREMENTAL_MIN_NODES`)
+  — nothing consults `mode.dense`, so a dense view above that size is spliced like any
+  other (an expand in the 40-schema dense overview of a 104k-node file: 344 ms).
+  The mini layout of the toggled subtree makes its OWN tier/density decision, so a subtree
+  spliced into a dense or fastest-tier view can come back orthogonally routed with inline
+  chips until "Tidy". `?incremental=0|1` forces the path for benchmarking.
 - Database kinds have fixed hue slots (`database|schema|table|column|index|trigger|procedure`,
   plus `group` for schema2ir's name-range buckets).
 - **Platforms**: everything shipped is Node ≥ 20 and portable across macOS, Linux and
   Windows; `CODEATLAS_ROOTS` uses the platform path-list delimiter; "Open in editor" has
   per-platform defaults. CI runs the viewer, tools and schema suites on a
-  ubuntu+windows matrix, plus a `package` job (every shipped graph validates, no personal
-  paths, shims runnable) and a Windows shim check; the hands-on Windows 11 pass is
+  ubuntu+windows matrix, plus a `package` job (manifest versions agree, every shipped graph
+  validates, no personal paths, shims runnable), an `audit` job and a Windows shim check;
+  the hands-on Windows 11 pass is
   `docs/audit/2026-09-07-windows-test.md`. Windows specifics: `code` on PATH is
   `code.cmd`, so an editor command that resolves to a batch file runs through `cmd.exe`
   (`spawnDetached` in `viewer/vite.config.ts`); npm test scripts must double-quote globs
@@ -254,6 +315,9 @@ shot of it. In your own Playwright scripts use `waitUntil: "domcontentloaded"` �
 The repo root is the plugin root; `.claude-plugin/plugin.json` is the manifest and
 `.claude-plugin/marketplace.json` lists the plugin itself (`source: "./"`), so users run
 `/plugin marketplace add <owner>/<repo>` then `/plugin install codeatlas@codeatlas`.
+The version lives in BOTH manifests and they must stay equal — bump them together on every
+shipped change (currently 0.3.0). `claude plugin validate` does NOT check this; CI's
+`package` job and `tools/test/manifests.test.mjs` do.
 Shipped components — keep them portable (no personal paths, no macOS-only assumptions
 without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
 
@@ -261,7 +325,7 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   essentials, honesty rules, view design); invoked automatically on diagram questions or
   as `/codeatlas:codeatlas <question>`. Keep it in sync with the sections above when the
   contract or the viewer changes. `skills/viewer/SKILL.md` — `/codeatlas:viewer
-  start|stop|status|open|paths`.
+  start|stop|restart|status|open|paths`.
 - `agents/graph-author.md` (Sonnet) and `agents/graph-refresh.md` (Haiku) — subagents
   `codeatlas:graph-author` / `codeatlas:graph-refresh`; they validate with the plugin's
   own `schema/validate.mjs`.
@@ -272,22 +336,42 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   under the data dir, along with a self-contained `stop-viewer.sh`/`.cmd` that still works
   after the plugin is uninstalled (the running viewer also exits on its own once the plugin
   manifest has been gone ~60 s, so a detached daemon cannot outlive its uninstall);
-  `stop` (verifies the pid is still a vite before killing; `taskkill
-  /T` on Windows) / `status` (exit 1 when down) / `open` / `paths` / `install`. A dependency
-  update that cannot complete keeps the working install and records it, so `start` and
-  `status` warn that the viewer is running stale packages until `install` succeeds. Graphs live
-  OUTSIDE the plugin so an update never deletes them. Tested end to end in
-  `tools/test/launcher.test.mjs`.
+  Verbs: `start|stop|restart|status|open|paths|install`. `stop` verifies the pid is still a
+  vite before killing (`taskkill /T` on Windows); `status` exits 1 when down; `restart`
+  stops THIS launcher's instance and starts it again — the only way a `node_modules` change
+  from a plugin update reaches a running viewer, and it refuses (exit 2) rather than kill a
+  viewer the launcher did not start. `start` and `status` print a NOTE when the viewer's
+  dependencies changed since it started, pointing at `restart`. A dependency update that
+  cannot complete keeps the working install and records it, so both warn that the viewer is
+  running stale packages until `install` succeeds. `start` is serialised by an exclusive
+  start lock, so two concurrent starts (the codeatlas skill and the viewer skill, or two
+  sessions) no longer race for the port or run `npm ci` on top of each other. Deps install
+  with `--omit=dev` — what a user runs is vite, never vitest/typescript, and it is the tree
+  CI audits. The data dir (`~/.codeatlas`, forced 0700) holds `live/`, the pidfile, the log,
+  the stop script, `viewer.state.json` (what the running instance was started with) and,
+  transiently while a start runs, `start.lock`. Graphs live OUTSIDE the plugin so an update
+  never deletes them. Tested end to end in `tools/test/launcher.test.mjs`.
 - Skills must NOT declare `allowed-tools` (verified 2026-09-05, Claude Code 2.1.261): with
   it, the `Skill` call itself becomes a permission gate ("Execute skill: codeatlas:viewer"),
   which `-p` denies outright and interactive mode would prompt for on every question. Let
   the Bash calls prompt normally instead. `${CLAUDE_PLUGIN_ROOT}` and `$ARGUMENTS` do
   expand in the skill body.
-- Check before shipping: `claude plugin validate .` (add `--strict`), `cd viewer && npm
+- `viewer/package.json`: vite and `@vitejs/plugin-react` are **dependencies**, not
+  devDependencies, deliberately — the daemon this plugin ships and runs IS vite, so the
+  production tree is what users execute and what the audit gate has to cover. Moving them
+  back to devDependencies silently makes both the launcher's install and the CI audit
+  vacuous (before this, `npm audit --omit=dev` reported "0 vulnerabilities" for a viewer
+  tree that carried two high advisories).
+- Check before shipping: `claude plugin validate .` (add `--strict`) — a MANUAL step, not in
+  CI, which would need the Claude Code CLI on the runner. Then `cd viewer && npm
   test`, `cd schema && npm test`, `cd tools && npm test`; try it as a stranger with
   `claude --plugin-dir /path/to/this/repo` from some other project (headless smoke test:
   `claude --plugin-dir <repo> --allowedTools "Bash(<repo>/bin/codeatlas-viewer *)" -p
-  "Use the /codeatlas:viewer skill with argument 'status'"`).
+  "Use the /codeatlas:viewer skill with argument 'status'"`). CI also runs an `audit` job
+  (`npm audit --audit-level=high --omit=dev` in `viewer/` and `schema/`; `tools/` is a dev
+  tree and is audited whole) and the workflow runs weekly on a Monday cron — the five test
+  jobs carry `if: github.event_name != 'schedule'`, so the weekly run is audit-only.
+  `.github/dependabot.yml` is the half that produces the fixing PR.
 
 ## Session habits (standing instructions)
 

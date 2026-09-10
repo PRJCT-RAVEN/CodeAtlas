@@ -4,10 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  # An advisory published today applies to a lockfile nobody has touched in months, so
+  # the audit gate has to run on a clock, not only on a commit. Only `audit` runs then.
+  schedule:
+    - cron: "17 6 * * 1"
 
 jobs:
   viewer:
     name: viewer (vitest, ${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -28,6 +33,7 @@ jobs:
 
   tools:
     name: tools (node --test, ${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,20 +55,21 @@ jobs:
         working-directory: schema
       - run: npm ci
         working-directory: tools
-      - run: npm test
-        working-directory: tools
-      # A suite that ran ZERO tests exits 0 — exactly what the old single-quoted glob
-      # did under cmd.exe. Nothing else would catch it.
-      - name: the tools suite actually ran tests
+      # One run, gated twice. A suite that ran ZERO tests exits 0 — exactly what the old
+      # single-quoted glob did under cmd.exe — and nothing else would catch it. Running
+      # `npm test` a second time just to grep it doubled the job for no extra coverage.
+      - name: the tools suite runs, and actually runs tests
         shell: pwsh
         working-directory: tools
         run: |
           $out = (npm test 2>&1 | Out-String)
+          Write-Host $out
           if ($out -match "# tests 0\b") { throw "the tools suite ran ZERO tests" }
           if ($out -notmatch "# fail 0") { throw "the tools suite reported failures" }
 
   schema:
     name: schema (validator tests, ${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -75,26 +82,43 @@ jobs:
           node-version: 22
       - run: npm ci
         working-directory: schema
-      - run: npm test
-        working-directory: schema
-      # A suite that ran ZERO tests exits 0 — exactly what the old single-quoted glob
-      # did under cmd.exe. Nothing else would catch it.
-      - name: the schema suite actually ran tests
+      # One run, gated twice. A suite that ran ZERO tests exits 0 — exactly what the old
+      # single-quoted glob did under cmd.exe — and nothing else would catch it. Running
+      # `npm test` a second time just to grep it doubled the job for no extra coverage.
+      - name: the schema suite runs, and actually runs tests
         shell: pwsh
         working-directory: schema
         run: |
           $out = (npm test 2>&1 | Out-String)
+          Write-Host $out
           if ($out -match "# tests 0\b") { throw "the schema suite ran ZERO tests" }
           if ($out -notmatch "# fail 0") { throw "the schema suite reported failures" }
 
   package:
     name: package (shipped artifacts)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Two manifests carry the plugin version and nothing keeps them equal: marketplace.json
+      # duplicates what plugin.json says, and `claude plugin validate` only checks the
+      # marketplace shape, so a skew ships silently and every bug report names the wrong build.
+      - name: Plugin manifests agree on the version
+        run: |
+          node -e '
+            const p = require("./.claude-plugin/plugin.json");
+            const m = require("./.claude-plugin/marketplace.json");
+            const entry = (m.plugins || []).find((x) => x.name === p.name);
+            if (!entry) throw new Error("marketplace.json lists no plugin named " + p.name);
+            if (entry.version !== p.version) {
+              throw new Error("version skew: plugin.json " + p.version + " vs marketplace.json " + entry.version);
+            }
+            // anchored: the unanchored form accepted "0.3.0.1" and "0.3.0-oops-typo"
+            if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(p.version)) throw new Error("not a semver version: " + p.version);
+          '
       - run: npm ci
         working-directory: schema
       - name: Every shipped graph validates
@@ -112,6 +136,7 @@ jobs:
 
   windows-shim:
     name: windows (.cmd shim + line endings)
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -128,3 +153,30 @@ jobs:
       - name: the .cmd shim runs
         shell: cmd
         run: bin\codeatlas-viewer.cmd paths
+
+  audit:
+    name: audit (production dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # These lockfiles are not a build detail: the launcher reproduces them verbatim with
+      # `npm ci --omit=dev` on every user's machine (bin/codeatlas-viewer.mjs), so an advisory
+      # in one ships until someone refreshes it. --omit=dev audits the tree a USER ends up running,
+      # which is why vite and @vitejs/plugin-react are dependencies of viewer/ and not
+      # devDependencies — the daemon we ship is vite. `npm audit` reads the lockfile, so
+      # none of this needs an install.
+      - name: viewer
+        run: npm audit --audit-level=high --omit=dev
+        working-directory: viewer
+      - name: schema
+        run: npm audit --audit-level=high --omit=dev
+        working-directory: schema
+      # tools/ declares no `dependencies` at all, so --omit=dev here would audit nothing
+      # and pass whatever advisory landed on playwright. Nothing in tools/ ships to a user
+      # (it is the screenshot/dev kit), so the whole tree is the right scope.
+      - name: tools (dev tree — nothing here ships)
+        run: npm audit --audit-level=high
+        working-directory: tools

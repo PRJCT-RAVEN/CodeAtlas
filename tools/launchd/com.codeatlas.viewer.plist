@@ -4,8 +4,16 @@
      substitutes __REPO__ / __HOME__ and copies it to ~/Library/LaunchAgents.
 
      KeepAlive.SuccessfulExit=false: relaunch only when serve.sh exits non-zero (vite died).
-     serve.sh exits 0 when the viewer is already up or the port is held by something else,
-     so a port conflict no longer causes a relaunch storm.
+     serve.sh exits 0 when the viewer is already up, when the port is held by something
+     else, and when __REPO__ cannot be read (a TCC-protected or moved checkout) — none of
+     those causes a relaunch storm. tools/install-launchd.sh refuses to install from
+     ~/Documents, ~/Desktop or ~/Downloads for the same reason.
+
+     No WorkingDirectory on purpose either: launchd chdir()s BEFORE it execs, so pointing
+     it at __REPO__/viewer meant that in the very case serve.sh's readability guard exists
+     for — a TCC-protected or moved checkout — the spawn failed before the script ran, and
+     KeepAlive relaunched it every ThrottleInterval forever. serve.sh cd's there itself,
+     after it has checked it can read it.
 
      No StandardOutPath/StandardErrorPath on purpose: serve.sh appends to
      ~/Library/Logs/codeatlas-viewer.log itself (works identically when run by hand) and
@@ -20,8 +28,6 @@
     <string>/bin/sh</string>
     <string>__REPO__/tools/serve.sh</string>
   </array>
-  <key>WorkingDirectory</key>
-  <string>__REPO__/viewer</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

@@ -15,6 +15,9 @@ from (
         'type', format_type(a.atttypid, a.atttypmod),
         'nullable', not a.attnotnull,
         'primaryKey', exists (select 1 from pg_index i where i.indrelid = c.oid and i.indisprimary and a.attnum = any(i.indkey)),
+        -- position within the primary key: an implicit composite foreign key pairs in KEY order
+        'primaryKeyOrdinal', (select k.ord from pg_index i, unnest(i.indkey) with ordinality k(attnum, ord)
+                              where i.indrelid = c.oid and i.indisprimary and k.attnum = a.attnum),
         'default', pg_get_expr(d.adbin, d.adrelid)) order by a.attnum), '[]'::json)
      from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
      where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped) as columns,

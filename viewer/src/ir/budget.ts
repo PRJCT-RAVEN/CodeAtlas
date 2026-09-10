@@ -7,10 +7,22 @@
 // (every table before any schema, every type before any module -- the view
 // stays uniform and the coarse structure stays on screen), largest subtree
 // first within a level, ids as the tie-break, so the result is deterministic.
+// The LAST level goes only as far as it has to (2026-09-10): folding it whole
+// because the view was three nodes over budget cost a whole level of context --
+// a 600-table Postgres import landed on one schema chip -- so there the biggest
+// subtrees fold and the rest stay open, and a fold that would gut a view already
+// close to its cap is refused outright (see MILD/MOST). A PARTIAL level is
+// deliberately absent from `levels`: the store remembers those depths and collapses
+// newcomers there unconditionally, which would finish the level off on the next poll.
 // The user's own expand/collapse decisions are never revisited (the store
 // passes them as `exclude`), and neither are the display ancestors of a
 // container the user expanded: collapsing a schema would hide the table the
 // user just opened.
+//
+// Both counts are maintained INCREMENTALLY as containers fold (a hidden-node set,
+// and display edges bucketed by the id they render at). Recomputing them per level
+// was O(levels x graph) -- 5.7 s on a 20,000-deep chain -- and the per-container
+// decision above would have made that O(candidates x graph).
 
 import type { GraphIR, IRNode } from "./types";
 
@@ -21,7 +33,11 @@ export interface BudgetOptions {
   maxEdges: number;
 }
 
-/** Measured 2026-09-05: about 1 s of ELK for ~600 visible nodes/edges with cross-container edges. */
+/**
+ * Measured 2026-09-05: about 1 s of ELK for ~600 visible nodes/edges with cross-container edges.
+ * The edge cap matches `FASTEST_EDGES` in layout/elk.ts on purpose — a budgeted view
+ * stays inside the tier that still routes edges orthogonally.
+ */
 export const DEFAULT_BUDGET: BudgetOptions = { maxVisible: 600, maxEdges: 800 };
 
 /**
@@ -35,10 +51,20 @@ export const DEFAULT_BUDGET: BudgetOptions = { maxVisible: 600, maxEdges: 800 };
  */
 export const RENDER_WARN = 800;
 
+/**
+ * When the view is within this multiple of a cap it is only MILDLY over it, and a fold
+ * that would hide more than `MOST` of what is on screen is refused: hiding 600 tables to
+ * get one node under the node cap — or to shave an edge overflow the layout already has a
+ * cheaper tier for (`layoutTier` in layout/elk.ts) — is how a 600-table schema became a
+ * single chip. Grossly over a cap there is no such trade and everything folds.
+ */
+const MILD = 2;
+const MOST = 0.5;
+
 export interface BudgetResult {
   /** Container ids to collapse (in the order they were chosen). */
   collapse: string[];
-  /** Display depths whose whole level this pass (or `uniformLevels`) collapsed. */
+  /** Display depths whose WHOLE level this pass (or `uniformLevels`) collapsed. */
   levels: number[];
   /** Display nodes in the graph (root and grouping files excluded). */
   total: number;
@@ -79,69 +105,113 @@ function buildModel(ir: GraphIR): Model {
   return { byId, parentOf, childrenOf, display };
 }
 
-/** Highest collapsed display ancestor (what a hidden node renders at), else the id itself. */
-function rep(id: string, m: Model, collapsed: ReadonlySet<string>): string {
-  let top: string | undefined;
-  for (let a: string | undefined = id; a !== undefined; a = m.parentOf.get(a)) if (collapsed.has(a)) top = a;
-  return top ?? id;
+/** One aggregated display edge in flight: `s`/`t` are the ids its endpoints currently render at. */
+interface DisplayEdge {
+  kind: string;
+  from: string;
+  to: string;
+  s: string;
+  t: string;
+  /** null once both endpoints render at the same id — an edge that folded into a node, and can never reappear. */
+  key: string | null;
 }
 
 // The tree walks below are iterative: a graph deep enough to exhaust the JS stack
 // passes shape.ts (which is iterative and memoised), so a recursive walk here would
 // throw out of setIR and — before the poll loop re-armed in a finally — kill the
 // live loop for good.
-function countVisible(m: Model, collapsed: ReadonlySet<string>): number {
-  let n = 0;
-  const stack: string[] = [];
-  for (const id of m.display) if (m.parentOf.get(id) === undefined) stack.push(id);
-  while (stack.length) {
-    const id = stack.pop()!;
-    n++;
-    if (collapsed.has(id)) continue;
-    const kids = m.childrenOf.get(id);
-    if (kids) stack.push(...kids);
-  }
-  return n;
-}
-
-function countEdges(ir: GraphIR, m: Model, collapsed: ReadonlySet<string>): number {
-  const seen = new Set<string>();
-  for (const e of ir.edges) {
-    if (e.kind === "contains" || !m.parentOf.has(e.from) || !m.parentOf.has(e.to)) continue;
-    const s = rep(e.from, m, collapsed);
-    const t = rep(e.to, m, collapsed);
-    if (s === t && e.from !== e.to) continue;
-    seen.add(`${e.kind} ${s} ${t}`);
-  }
-  return seen.size;
-}
-
-/** Visible display nodes strictly below `id` under the current collapsed set. */
-function visibleBelow(id: string, m: Model, collapsed: ReadonlySet<string>): number {
-  let n = 0;
-  const stack = [...(m.childrenOf.get(id) ?? [])];
-  while (stack.length) {
-    const c = stack.pop()!;
-    n++;
-    if (collapsed.has(c)) continue;
-    const kids = m.childrenOf.get(c);
-    if (kids) stack.push(...kids);
-  }
-  return n;
-}
-
 export function autoCollapse(
   ir: GraphIR,
   collapsed: ReadonlySet<string>,
   opts: BudgetOptions = DEFAULT_BUDGET,
   exclude: ReadonlySet<string> = new Set(),
   /** Depths collapsed by an earlier pass: a container that newly appears there is collapsed too, so the level stays uniform. */
-  uniformLevels: ReadonlySet<number> = new Set()
+  uniformLevels: ReadonlySet<number> = new Set(),
+  /**
+   * Drop the anti-gutting guard (MILD/MOST). Only for an explicit "collapse to fit":
+   * the guard exists so the AUTOMATIC pass never trades a whole level of context for a
+   * handful of nodes, but someone who clicks the button has asked for exactly that, and
+   * a guard that silently declines makes the button a no-op. `over()` still stops the
+   * fold the moment the view fits, so gutting is the last resort, not the first move.
+   */
+  force = false
 ): BudgetResult {
   const m = buildModel(ir);
   const cur = new Set(collapsed);
-  const before = countVisible(m, cur);
+
+  // One walk from the display roots answers both questions the pass keeps asking:
+  // what is hidden under an already-collapsed container, and what each display node
+  // RENDERS at (its highest collapsed ancestor, else itself).
+  const hidden = new Set<string>();
+  const repOf = new Map<string, string>();
+  let before = 0;
+  {
+    const stack: Array<[string, string | null]> = [];
+    for (const id of m.display) if (m.parentOf.get(id) === undefined) stack.push([id, null]);
+    while (stack.length) {
+      const [id, top] = stack.pop()!;
+      if (top === null) before++;
+      else hidden.add(id);
+      repOf.set(id, top ?? id);
+      const kids = m.childrenOf.get(id);
+      if (kids) {
+        const below = top ?? (cur.has(id) ? id : null);
+        for (const c of kids) stack.push([c, below]);
+      }
+    }
+  }
   let visible = before;
+
+  // Display edges keyed by (kind, source rep, target rep), bucketed by the ids they
+  // render at, so collapsing a container only re-keys the edges beneath it.
+  const dedges: DisplayEdge[] = [];
+  const incident = new Map<string, number[]>();
+  const keyCount = new Map<string, number>();
+  const keyOf = (d: DisplayEdge) => (d.s === d.t && d.from !== d.to ? null : `${d.kind} ${d.s} ${d.t}`);
+  const addKey = (k: string | null) => {
+    if (k !== null) keyCount.set(k, (keyCount.get(k) ?? 0) + 1);
+  };
+  const dropKey = (k: string | null) => {
+    if (k === null) return;
+    const n = keyCount.get(k)!;
+    if (n > 1) keyCount.set(k, n - 1);
+    else keyCount.delete(k);
+  };
+  const attach = (id: string, i: number) => {
+    const arr = incident.get(id);
+    if (arr) arr.push(i);
+    else incident.set(id, [i]);
+  };
+  for (const e of ir.edges) {
+    if (e.kind === "contains" || !m.parentOf.has(e.from) || !m.parentOf.has(e.to)) continue;
+    const d: DisplayEdge = { kind: e.kind, from: e.from, to: e.to, s: repOf.get(e.from)!, t: repOf.get(e.to)!, key: null };
+    d.key = keyOf(d);
+    if (d.key === null) continue; // already folded away; no further collapse can bring it back
+    const i = dedges.length;
+    dedges.push(d);
+    addKey(d.key);
+    attach(d.s, i);
+    if (d.t !== d.s) attach(d.t, i);
+  }
+  /** Move every edge rendering at `from` onto `to` (the container `from` just folded into). */
+  const rekey = (from: string, to: string) => {
+    const list = incident.get(from);
+    if (!list) return;
+    incident.delete(from);
+    const keep: number[] = [];
+    for (const i of list) {
+      const d = dedges[i];
+      dropKey(d.key);
+      if (d.s === from) d.s = to;
+      if (d.t === from) d.t = to;
+      d.key = keyOf(d);
+      addKey(d.key);
+      if (d.key !== null) keep.push(i);
+    }
+    const arr = incident.get(to);
+    if (arr) for (const i of keep) arr.push(i);
+    else incident.set(to, keep);
+  };
 
   // depth + subtree size per display node
   const depth = new Map<string, number>();
@@ -200,13 +270,40 @@ export function autoCollapse(
     .filter((id) => (m.childrenOf.get(id)?.length ?? 0) > 0 && !cur.has(id) && !protectedIds.has(id))
     .sort((a, b) => depthOf(b) - depthOf(a) || sizeOf(b) - sizeOf(a) || (a < b ? -1 : a > b ? 1 : 0));
 
-  const isVisible = (id: string) => rep(id, m, cur) === id;
   const chosen: string[] = [];
   const collapse = (id: string) => {
-    const hidden = visibleBelow(id, m, cur);
+    // everything still visible under `id` folds into it
+    const stack = [...(m.childrenOf.get(id) ?? [])];
+    let n = 0;
+    while (stack.length) {
+      const c = stack.pop()!;
+      if (hidden.has(c)) continue;
+      hidden.add(c);
+      n++;
+      rekey(c, id);
+      if (cur.has(c)) continue;
+      const kids = m.childrenOf.get(c);
+      if (kids) stack.push(...kids);
+    }
     cur.add(id);
     chosen.push(id);
-    visible -= hidden;
+    visible -= n;
+  };
+  /** Would folding `id` hide most of the visible view? (`sizeOf` bounds it, so the walk is usually skipped.) */
+  const gutsTheView = (id: string) => {
+    const most = visible * MOST;
+    if (sizeOf(id) <= most) return false;
+    let n = 0;
+    const stack = [...(m.childrenOf.get(id) ?? [])];
+    while (stack.length && n <= most) {
+      const c = stack.pop()!;
+      if (hidden.has(c)) continue;
+      n++;
+      if (cur.has(c)) continue;
+      const kids = m.childrenOf.get(c);
+      if (kids) stack.push(...kids);
+    }
+    return n > most;
   };
 
   // candidates grouped by depth, deepest level first
@@ -217,32 +314,51 @@ export function autoCollapse(
     if (last && depthOf(last[0]) === d) last.push(id);
     else levels.push([id]);
   }
-  const collapseLevel = (level: string[]) => {
-    for (const id of level) if (isVisible(id) && !cur.has(id)) collapse(id);
+  /** Fold this level (largest subtree first) while `over()` holds; true when the WHOLE level went. */
+  /** Containers a phase declined to gut. The decision is final for this whole pass. */
+  const refused = new Set<string>();
+  const foldLevel = (level: string[], over: () => boolean, mild: () => boolean): boolean => {
+    const open = level.filter((id) => !hidden.has(id) && !cur.has(id));
+    let folded = 0;
+    for (const id of open) {
+      if (!over()) break;
+      // A container the NODE phase protected stays protected in the EDGE phase. Without
+      // this the edge phase folded exactly what the node phase had just refused a moment
+      // earlier — which did not remove the "600 tables became one chip" cliff, only moved
+      // it to ~810 tables, where the aggregated foreign keys pass 2x the edge budget.
+      // (Left in `open`, so a level that ends here still counts as NOT wholly folded.)
+      if (refused.has(id)) continue;
+      if (!force && mild() && gutsTheView(id)) {
+        refused.add(id);
+        continue; // smaller siblings may still be worth folding
+      }
+      collapse(id);
+      folded++;
+    }
+    return folded === open.length;
   };
+  const always = () => true;
+  const never = () => false;
   const done: number[] = [];
   // levels an earlier pass collapsed stay uniform for newcomers
   for (const level of levels) {
     const d = depthOf(level[0]);
-    if (uniformLevels.has(d)) {
-      collapseLevel(level);
-      done.push(d);
-    }
+    if (!uniformLevels.has(d)) continue;
+    foldLevel(level, always, never);
+    done.push(d);
   }
-  // node phase: whole levels until the visible count fits
+  // node phase: levels until the visible count fits, the last one only as far as it must
   let li = 0;
   for (; li < levels.length && visible > opts.maxVisible; li++) {
-    collapseLevel(levels[li]);
+    if (!foldLevel(levels[li], () => visible > opts.maxVisible, () => visible <= MILD * opts.maxVisible)) break;
     done.push(depthOf(levels[li][0]));
   }
   // edge phase: aggregated display edges must fit too
-  let edges = countEdges(ir, m, cur);
-  for (; li < levels.length && edges > opts.maxEdges; li++) {
-    collapseLevel(levels[li]);
+  for (; li < levels.length && keyCount.size > opts.maxEdges; li++) {
+    if (!foldLevel(levels[li], () => keyCount.size > opts.maxEdges, () => keyCount.size <= MILD * opts.maxEdges)) break;
     done.push(depthOf(levels[li][0]));
-    edges = countEdges(ir, m, cur);
   }
-  return { collapse: chosen, levels: [...new Set(done)], total: m.display.length, visible, edges, hidden: before - visible };
+  return { collapse: chosen, levels: [...new Set(done)], total: m.display.length, visible, edges: keyCount.size, hidden: before - visible };
 }
 
 /** `?budget=<nodes>[,<edges>]` -> options, else null (defaults apply). */

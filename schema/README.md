@@ -14,8 +14,15 @@ node validate.mjs --quiet <graph.json>             # exit code only
 npm test                                           # node --test test/
 ```
 
-Exit codes: `0` every file valid · `1` at least one file invalid · `2` usage error.
-Errors are one line each and name the offending id.
+Exit codes: `0` every file valid · `1` at least one file invalid · `2` usage error, or the
+validator's own dependency (`ajv`) is missing — it says so and names the install command
+instead of dying with a module-resolution stack trace.
+
+Errors are one line each and name the offending id; a JSON Schema error also quotes the
+offending value (`/nodes/8/id must match pattern "…" — got "doc:we\nird.txt"`). Past 200
+schema errors the list is truncated with `… and N more schema errors (not listed)`: a
+systematically broken 100k-node producer emits six figures of them and only the first
+50 are printed anyway.
 
 ## What v0.2 changed
 
@@ -48,6 +55,7 @@ Errors are one line each and name the offending id.
 | sorted by id, UTF-8 byte order | `nodes\|edges not sorted by id (UTF-8 byte order) at index i: "a" >= "b" (spec N2)` |
 | cluster members resolve | `cluster <cid>: unknown member <id>` |
 | annotation keys resolve | `annotation for unknown id: <id>` |
+| relative loc paths use forward slashes | `node <id>: relative loc.file "src\App.tsx" uses backslashes — repo-relative paths use forward slashes` (absolute Windows paths such as `C:\src\App.tsx` are left alone) |
 
 Sorting uses `Buffer.compare` on UTF-8 bytes — every producer must use the same order.
 JavaScript's default string comparison is UTF-16 code-unit order and differs for astral
@@ -60,11 +68,21 @@ INVALID rather than crashing.
 ## Conventions
 
 - ID prefixes: `package:` `module:` `file:` `type:` `func:` `prop:` (short forms for
-  function/property); conceptual views may use any lowercase prefix (`step:`, `store:`, …).
+  function/property); conceptual views may use any prefix in the same charset (`step:`,
+  `store:`, …).
+- **Charset**: id prefixes and `edge.kind` are `[a-z][a-z0-9_]*` — lowercase letters,
+  digits and underscore. `routes_to`, never `routes-to` or `routesTo`: the edge id embeds
+  the kind, and a hyphen makes `e:<kind>:<from>-><to>` ambiguous to anything splitting on
+  `->`. A bad kind is reported on `/edges/N/kind`, not only on the id.
 - Hierarchy: `parent` + mirrored `contains` edges for every parent link; the viewer renders
   them as nesting, not arrows.
 - File node IDs use package-root-relative paths: `file:Sources/Tiny/App.swift`.
 - `loc` is 1-based line (and optional col) at the start of the declaration syntax node (or
   the call site for edges). Paths are repo-relative (root node `attrs.absRoot`) or absolute.
+  A relative path uses forward slashes on every platform, Windows included, so the same
+  repo yields the same ids and locs everywhere.
+- Ids and relative locs cannot carry a line terminator (JSON Schema's `.` never matches
+  one). `fs2ir` counts such names into `attrs.skipped.unrepresentable` rather than emitting
+  an id its own validator would reject.
 - Function IDs include the full selector: `func:Tiny/ConsoleGreeter.greet(name:)`.
 - Exactly one node (the root) omits `parent`.

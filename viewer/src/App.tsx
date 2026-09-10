@@ -195,6 +195,172 @@ export function pollSources(search: string): string[] {
   return ["live/graph.json", "sample-graph.json"];
 }
 
+/** What the live loop carries between ticks (mutated by `pollOnce`). */
+export interface PollState {
+  /** Bytes of the last accepted graph — identical bytes are never re-parsed. */
+  last: string;
+  /** Once live/ has served a graph, a 404 there is a hiccup, not "absent". */
+  liveSeen: boolean;
+  /** Per-source ETag for the next If-None-Match. */
+  etags: Map<string, string>;
+}
+export const newPollState = (): PollState => ({ last: "", liveSeen: false, etags: new Map() });
+
+/** One tick's decision: install a graph, show an error (`null` clears one), or neither. */
+export interface PollResult {
+  ir?: GraphIR;
+  source?: string;
+  error?: string | null;
+}
+
+type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+/**
+ * One pass over the poll sources, first answer wins. Every branch of the live
+ * loop is here and nowhere else, because this is the product's core promise:
+ * a 304 or unchanged bytes change nothing, a 404 on live/ AFTER live has served
+ * a graph keeps the last good one on screen (a non-atomic rewrite must never
+ * swap in the sample), a 404 before that falls through to the next source, and
+ * anything unreadable — HTML from the dev server, invalid JSON, a graph the
+ * shape guard rejects — is reported without touching what is rendered.
+ */
+export async function pollOnce(
+  sources: string[],
+  state: PollState,
+  fetchFn: FetchLike,
+  signal?: AbortSignal
+): Promise<PollResult> {
+  for (const url of sources) {
+    let text: string;
+    try {
+      const etag = state.etags.get(url);
+      const r = await fetchFn(url, {
+        cache: "no-store",
+        headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+        signal,
+      });
+      // `error: null`, not `{}`: 304 means this source is present and serving the bytes we
+      // already have. Returning nothing left a previous tick's "missing (keeping last good
+      // graph)" on screen forever once the file came back unchanged — the ETag still
+      // matched, so no 200 ever arrived to clear it.
+      if (r.status === 304) return { error: null }; // unchanged since the last poll
+      if (r.status === 404) {
+        if (state.liveSeen && url.startsWith("live/")) return { error: `${url}: missing (keeping last good graph)` };
+        continue; // absent → next source
+      }
+      if (!r.ok) return { error: `${url}: HTTP ${r.status}` };
+      if (!/json/i.test(r.headers.get("content-type") ?? "")) continue; // dev-server HTML fallback for a missing file
+      text = await r.text();
+      const tag = r.headers.get("etag");
+      if (tag) state.etags.set(url, tag);
+    } catch {
+      if (signal?.aborted) return {};
+      continue; // network hiccup — try next source / next tick
+    }
+    if (text === state.last) return { error: null }; // restored to the last good bytes
+    let g: unknown;
+    try {
+      g = JSON.parse(text);
+    } catch (e) {
+      return { error: `${url}: invalid JSON (${e instanceof Error ? e.message : String(e)})` };
+    }
+    const problem = checkGraphShape(g);
+    if (problem) return { error: `${url}: ${problem}` };
+    // Advance `last` BEFORE the caller renders: if installing the graph throws,
+    // we must not spin on the same bad bytes — the next change retries.
+    state.last = text;
+    if (url.startsWith("live/")) state.liveSeen = true;
+    return { ir: g as GraphIR, source: url };
+  }
+  return {};
+}
+
+// --- filter index ------------------------------------------------------------
+// The filter effect re-runs after EVERY layout pass (it re-tags `dim` on the new
+// node objects), so a scan of the whole IR inside it was paid again on each
+// incremental toggle and each poll while a query was up. Name/kind/id are
+// lowercased once per graph here and the match set is memoised per query, which
+// leaves the effect O(visible).
+
+export interface SearchIndex {
+  ids: string[];
+  parents: (string | undefined)[];
+  /** name + kind + id, lowercased, one entry per IR node. */
+  hay: string[];
+  at: Map<string, number>;
+  root: string;
+}
+
+export function buildSearchIndex(ir: GraphIR): SearchIndex {
+  const ids: string[] = [];
+  const parents: (string | undefined)[] = [];
+  const hay: string[] = [];
+  const at = new Map<string, number>();
+  for (const n of ir.nodes) {
+    at.set(n.id, ids.length);
+    ids.push(n.id);
+    parents.push(n.parent);
+    hay.push(`${n.name}\u0000${n.kind}\u0000${n.id}`.toLowerCase());
+  }
+  return { ids, parents, hay, at, root: ir.root };
+}
+
+/** Ids whose name, kind or id contains the query; null when nothing is filtered. */
+export function searchMatches(index: SearchIndex | null, query: string): Set<string> | null {
+  const q = query.trim().toLowerCase();
+  if (!index || !q) return null;
+  const out = new Set<string>();
+  for (let i = 0; i < index.hay.length; i++) if (index.hay[i].includes(q)) out.add(index.ids[i]);
+  return out;
+}
+
+/**
+ * Matches that are not on screen (inside collapsed containers), and the visible
+ * ancestors that must stay lit so a column name is findable in a 100k-node schema.
+ */
+export function hiddenMatchesOf(
+  index: SearchIndex,
+  matched: ReadonlySet<string>,
+  shown: ReadonlySet<string>
+): { hidden: number; lit: Set<string> } {
+  const lit = new Set<string>();
+  let hidden = 0;
+  const parentOf = (id: string): string | undefined => {
+    const i = index.at.get(id);
+    return i === undefined ? undefined : index.parents[i];
+  };
+  for (const id of matched) {
+    if (shown.has(id) || id === index.root) continue;
+    hidden++;
+    let p = parentOf(id);
+    while (p && !shown.has(p)) p = parentOf(p);
+    if (p) lit.add(p);
+  }
+  return { hidden, lit };
+}
+
+// --- keyboard activation ------------------------------------------------------
+
+/** Keys that activate the focused node — React Flow's own set, bound to OUR selection. */
+const ACTIVATE_KEYS = ["Enter", " "];
+
+/** Just enough of an Element for `keyActivation` (and for a test to fake). */
+export interface KeyTarget {
+  closest(selector: string): { dataset?: { id?: string } } | null;
+}
+
+/**
+ * Which node id an Enter/Space press activates, if any. React Flow focuses the
+ * wrapper it renders AROUND AtlasNodeView, so the key event never reaches our
+ * own div: the canvas listens and resolves the wrapper's data-id instead. Its
+ * built-in handler only ever touches React Flow's internal selection, which is
+ * not what the details panel, collapse/expand or "Open in editor" read.
+ */
+export function keyActivation(key: string, target: KeyTarget | null): string | null {
+  if (!ACTIVATE_KEYS.includes(key)) return null;
+  return target?.closest?.(".react-flow__node")?.dataset?.id ?? null;
+}
+
 // --- key: dynamic legend of only what the current graph actually uses --------
 
 function EdgeSwatch({ kind, dashed }: { kind: EdgeKind; dashed?: boolean }) {
@@ -298,7 +464,7 @@ function minimapColorFor(t: Theme): (n: AtlasNode) => string {
 function posKey(root: string): string {
   return `codeatlas:pos:${root}`;
 }
-function loadPositions(root: string): Map<string, Point> {
+export function loadPositions(root: string): Map<string, Point> {
   try {
     const raw = localStorage.getItem(posKey(root));
     if (!raw) return new Map();
@@ -311,20 +477,85 @@ function loadPositions(root: string): Map<string, Point> {
 /** Most-recently-used roots kept in localStorage; older ones are evicted. */
 export const MAX_SAVED_ROOTS = 24;
 const ROOTS_KEY = "codeatlas:pos-roots";
-function savePositions(root: string, m: Map<string, Point>) {
+
+/** Saved roots, newest first. A lost/corrupt list is rebuilt from the key space
+ *  — it is the only record of what we wrote, so without it every `codeatlas:pos:`
+ *  key would be an orphan nothing ever removes. */
+function readRoots(): string[] {
   try {
-    localStorage.setItem(posKey(root), JSON.stringify(Object.fromEntries(m)));
-    let roots: string[] = [];
-    try {
-      roots = JSON.parse(localStorage.getItem(ROOTS_KEY) ?? "[]");
-    } catch {
-      roots = [];
-    }
-    roots = [root, ...roots.filter((r) => r !== root)];
-    for (const old of roots.slice(MAX_SAVED_ROOTS)) localStorage.removeItem(posKey(old));
-    localStorage.setItem(ROOTS_KEY, JSON.stringify(roots.slice(0, MAX_SAVED_ROOTS)));
+    const v: unknown = JSON.parse(localStorage.getItem(ROOTS_KEY) ?? "[]");
+    if (Array.isArray(v)) return v.filter((r): r is string => typeof r === "string");
   } catch {
-    /* quota / private mode — in-memory map still works */
+    /* corrupt — fall through to the sweep */
+  }
+  const found: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(posKey(""))) found.push(k.slice(posKey("").length));
+  }
+  return found;
+}
+
+/**
+ * Is this the origin being FULL, as opposed to storage being refused outright?
+ * Only a full origin is worth evicting for. Every engine spells it differently, and the
+ * numeric codes are the legacy spellings still thrown by older Safari.
+ */
+export function isQuotaError(e: unknown): boolean {
+  if (typeof DOMException !== "undefined" && e instanceof DOMException) {
+    return e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" || e.code === 22 || e.code === 1014;
+  }
+  const name = (e as { name?: unknown } | null)?.name;
+  return name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED";
+}
+
+/** Is the event target somewhere the user is typing? Exported for ui-keyboard.test.ts. */
+export function isTextEntry(target: unknown): boolean {
+  const el = target as { tagName?: unknown; isContentEditable?: unknown } | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  if (el.isContentEditable === true) return true;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
+export function savePositions(root: string, m: Map<string, Point>) {
+  try {
+    const payload = JSON.stringify(Object.fromEntries(m));
+    const roots = [root, ...readRoots().filter((r) => r !== root)];
+    // Evict BEFORE writing: the write can throw on a full origin, and the
+    // eviction used to sit after it, so a quota error left the list untrimmed
+    // and position persistence dead for good.
+    for (const old of roots.splice(MAX_SAVED_ROOTS)) localStorage.removeItem(posKey(old));
+    let saved = false;
+    while (!saved) {
+      try {
+        localStorage.setItem(posKey(root), payload);
+        saved = true;
+      } catch (e) {
+        // A SecurityError (storage disabled by policy) used to land here too, and the loop
+        // then deleted every other saved view one by one before giving up — destroying
+        // data over a condition eviction could never fix. Only a full origin is evictable.
+        if (!isQuotaError(e)) break;
+        // The quota is shared with every other page on this origin, so dropping
+        // our own oldest view is the only lever we have; give up once it is the
+        // only one left, leaving the list consistent with what is stored.
+        const old = roots[roots.length - 1];
+        if (old === undefined || old === root) break;
+        roots.pop();
+        localStorage.removeItem(posKey(old));
+      }
+    }
+    // A write that failed leaves whatever this root stored LAST time: stale, but a far
+    // better starting layout than none, so it stays. (It used to be deleted here — on any
+    // error at all — which turned "could not save the newest positions" into "lost the
+    // positions you had".) The list must still name only keys that exist, so a root whose
+    // FIRST save is the one that failed comes back out of it.
+    if (!saved && localStorage.getItem(posKey(root)) === null) {
+      const i = roots.indexOf(root);
+      if (i >= 0) roots.splice(i, 1);
+    }
+    localStorage.setItem(ROOTS_KEY, JSON.stringify(roots));
+  } catch {
+    /* storage unavailable (private mode) — the in-memory map still works */
   }
 }
 
@@ -382,11 +613,9 @@ export default function App() {
   // a download; `last` remains the fallback for servers without ETags.
   useEffect(() => {
     const ctrl = new AbortController();
-    let last = "";
-    let liveSeen = false; // once live/ has served a graph, a 404 is a hiccup, not "absent"
-    let timer = 0;
-    const etags = new Map<string, string>();
+    const state = newPollState();
     const sources = pollSources(window.location.search);
+    let timer = 0;
     const tick = async () => {
       if (ctrl.signal.aborted) return;
       // Everything below runs inside try/finally: the loop MUST re-arm even if the
@@ -395,62 +624,15 @@ export default function App() {
       // never reached, and the live loop was dead until a manual browser reload —
       // silently, since the canvas kept showing the last good graph.
       try {
-      for (const url of sources) {
-        let text: string;
-        try {
-          const etag = etags.get(url);
-          const r = await fetch(url, {
-            cache: "no-store",
-            headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
-            signal: ctrl.signal,
-          });
-          if (r.status === 304) break; // unchanged since the last poll
-          if (r.status === 404) {
-            if (liveSeen && url.startsWith("live/")) {
-              // a non-atomic rewrite (rm + write) must not swap in the sample:
-              // keep the last good graph and say why
-              setPollError(`${url}: missing (keeping last good graph)`);
-              break;
-            }
-            continue; // absent → next source
-          }
-          const ct = r.headers.get("content-type") ?? "";
-          if (!r.ok) {
-            setPollError(`${url}: HTTP ${r.status}`);
-            break;
-          }
-          if (!/json/i.test(ct)) continue; // dev-server HTML fallback for a missing file
-          text = await r.text();
-          const tag = r.headers.get("etag");
-          if (tag) etags.set(url, tag);
-        } catch {
-          if (ctrl.signal.aborted) return;
-          continue; // network hiccup — try next source / next tick
-        }
-        if (text === last) {
-          if (useAtlas.getState().status.error) setPollError(null); // restored to the last good bytes
-          break;
-        }
-        let g: unknown;
-        try {
-          g = JSON.parse(text);
-        } catch (e) {
-          setPollError(`${url}: invalid JSON (${e instanceof Error ? e.message : String(e)})`);
-          break;
-        }
-        const problem = checkGraphShape(g);
-        if (problem) {
-          setPollError(`${url}: ${problem}`);
-          break;
-        }
-        last = text;
-        if (url.startsWith("live/")) liveSeen = true;
-        setIR(g as GraphIR, url);
-        break;
-      }
+        const r = await pollOnce(sources, state, (url, init) => fetch(url, init), ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        // `error: null` only clears a message that is actually up; writing it
+        // unconditionally would re-render on every quiet poll.
+        if (r.error !== undefined && (r.error !== null || useAtlas.getState().status.error)) setPollError(r.error);
+        if (r.ir) setIR(r.ir, r.source!);
       } catch (e) {
-        // `last` was already advanced for a graph that parsed and passed the shape
-        // guard, so we do not spin on the same bad bytes; the next change retries.
+        // `state.last` was already advanced for a graph that parsed and passed the
+        // shape guard, so we do not spin on the same bad bytes; the next change retries.
         if (!ctrl.signal.aborted) setPollError(`render failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         if (!ctrl.signal.aborted) timer = window.setTimeout(tick, 1000);
@@ -520,6 +702,14 @@ export default function App() {
               parentId: n.parentId,
               extent: n.parentId ? ("parent" as const) : undefined,
               selectable: true,
+              // React Flow owns the focusable wrapper, so the accessible name of
+              // a node has to be set on the node object, not inside AtlasNodeView.
+              ariaLabel: `${n.ir.kind} ${n.ir.name}${n.collapsed ? ", collapsed" : n.isContainer ? ", expanded" : ""}`,
+              // …and the STATE goes in the state attribute, not only baked into the name:
+              // a screen reader announces an aria-expanded change on the same element,
+              // where a changed label alone is silent. Only on nodes that actually toggle.
+              domAttributes:
+                n.isContainer || n.collapsed ? { "aria-expanded": n.collapsed ? "false" : "true" } : undefined,
               // stacking: edges (2, pinned in CSS) < containers (3) < leaf marks (4)
               zIndex: n.isContainer ? 3 : 4,
               data: {
@@ -538,6 +728,7 @@ export default function App() {
               old.position.x === fresh.position.x && old.position.y === fresh.position.y &&
               old.width === fresh.width && old.height === fresh.height && old.parentId === fresh.parentId &&
               old.zIndex === fresh.zIndex &&
+              old.ariaLabel === fresh.ariaLabel &&
               (["label", "kind", "typeKind", "isContainer", "collapsed", "delta"] as const).every((k) => old.data[k] === fresh.data[k]);
             const obj = same ? old! : fresh;
             nextNodeObjs.set(n.ir.id, obj);
@@ -607,31 +798,22 @@ export default function App() {
   // Filter box: re-tag `dim` on the laid-out nodes only — never a relayout, never
   // a localStorage write per keystroke. Matches INSIDE collapsed containers count
   // too: the container they render at stays lit, and the count says how many
-  // are hidden, so a column name is findable in a 100k-node schema.
+  // are hidden, so a column name is findable in a 100k-node schema. The scan
+  // itself is memoised (see SearchIndex) so only the tagging repeats per layout.
   const [hiddenMatches, setHiddenMatches] = useState(0);
+  const searchIndex = useMemo(() => (ir ? buildSearchIndex(ir) : null), [ir]);
+  const matched = useMemo(() => searchMatches(searchIndex, query), [searchIndex, query]);
   useEffect(() => {
-    const q = query.trim().toLowerCase();
-    const hit = (name: string, kind: string, id: string) =>
-      name.toLowerCase().includes(q) || kind.toLowerCase().includes(q) || id.toLowerCase().includes(q);
-    const lit = new Set<string>();
-    let hidden = 0;
-    if (q && ir) {
-      const shown = new Set(nodes.map((n) => n.id));
-      const byId = new Map(ir.nodes.map((n) => [n.id, n]));
-      for (const n of ir.nodes) {
-        if (shown.has(n.id) || n.id === ir.root || !hit(n.name, n.kind, n.id)) continue;
-        hidden++;
-        let p = n.parent ? byId.get(n.parent) : undefined;
-        while (p && !shown.has(p.id)) p = p.parent ? byId.get(p.parent) : undefined;
-        if (p) lit.add(p.id);
-      }
-    }
+    const { hidden, lit } =
+      matched && searchIndex
+        ? hiddenMatchesOf(searchIndex, matched, new Set(nodes.map((n) => n.id)))
+        : { hidden: 0, lit: new Set<string>() };
     setHiddenMatches(hidden);
     setNodes((prev) => {
       let changed = false;
       const next = prev.map((n) => {
         const d = n.data as AtlasNodeData;
-        const dim = !!q && !hit(d.label, d.kind, n.id) && !lit.has(n.id);
+        const dim = !!matched && !matched.has(n.id) && !lit.has(n.id);
         if (dim === d.dim) return n;
         changed = true;
         const obj = { ...n, data: { ...d, dim } };
@@ -640,16 +822,45 @@ export default function App() {
       });
       return changed ? next : prev;
     });
-  }, [query, nodes, ir]);
+  }, [matched, searchIndex, nodes]);
 
+  // every node is selectable (containers carry a loc too); containers also
+  // toggle so a single gesture still expands/collapses. Mouse and keyboard
+  // share this body — a node that can be focused must be usable.
+  const activate = (id: string, togglesContainer: boolean) => {
+    // Also here, not only in the effect on `selected`: re-activating the node that is
+    // ALREADY selected does not change `selected`, so the effect never fires and the
+    // previous "Open in editor" reply stayed on screen looking like a fresh answer.
+    setOpenResult(null);
+    select(id);
+    if (togglesContainer) toggleCollapse(id);
+  };
   const onNodeClick: NodeMouseHandler = (_ev, node) => {
     const d = node.data as AtlasNodeData;
-    // every node is selectable (containers carry a loc too); containers also
-    // toggle so a single click still expands/collapses
-    select(node.id);
-    setOpenResult(null);
-    if (d.isContainer || d.collapsed) toggleCollapse(node.id);
+    activate(node.id, d.isContainer || d.collapsed);
   };
+  const onCanvasKeyDown = (ev: React.KeyboardEvent<HTMLDivElement>) => {
+    const id = keyActivation(ev.key, ev.target as unknown as KeyTarget);
+    if (!id) return;
+    ev.preventDefault(); // Space would scroll the pane
+    const d = nodeObjs.current.get(id)?.data;
+    activate(id, !!d && (d.isContainer || d.collapsed));
+  };
+  // Escape closes the details panel from anywhere — React Flow's own Escape
+  // only clears its internal selection. Not while a text field has focus, though:
+  // Escape in the filter box means "clear what I typed", and stealing it there
+  // dismissed the panel the user was reading instead.
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      if (isTextEntry(ev.target)) return;
+      select(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [select]);
+  // a different node was selected (however) — the last /open reply is stale
+  useEffect(() => setOpenResult(null), [selected]);
 
   const selectedNode = useMemo(
     () => (ir && selected ? ir.nodes.find((n) => n.id === selected) ?? null : null),
@@ -689,7 +900,7 @@ export default function App() {
     : [];
 
   return (
-    <div className={"atlas-root" + (big ? " atlas-big" : "")}>
+    <div className={"atlas-root" + (big ? " atlas-big" : "")} onKeyDown={onCanvasKeyDown}>
       <CanvasBoundary resetKey={ir}>
         <ReactFlow
           nodes={nodes}
@@ -702,6 +913,7 @@ export default function App() {
           minZoom={0.05}
           nodesDraggable={false}
           nodesConnectable={false}
+          edgesFocusable={false} // an edge is not actionable; 600 of them are just tab stops
           onlyRenderVisibleElements={culling}
           proOptions={{ hideAttribution: true }}
         >

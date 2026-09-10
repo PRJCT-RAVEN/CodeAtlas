@@ -166,6 +166,23 @@ body,
   box-shadow: 0 0 0 2px var(--select), 0 0 14px var(--select-glow);
 }
 
+/* React Flow makes every node a tab stop and Enter/Space activates it (App.tsx),
+ * so the focused one has to be visible — on the wrapper, which is what takes focus.
+ *
+ * Both selectors are load-bearing, not decoration: React Flow's own stylesheet carries
+ * `.react-flow__node.selectable:focus,.react-flow__node.selectable:focus-visible
+ * { outline: none }` at (0,3,0), so a bare `.react-flow__node:focus-visible` lost and the
+ * ring never rendered — a keyboard user could activate a node they could not see. The
+ * `.selectable` line matches that reset class for class and wins on the `.atlas-root`
+ * ancestor; the shorter one covers a node RF has not marked selectable, which its reset
+ * does not touch either. ui-keyboard.test.ts asserts the specificity, so it cannot rot
+ * back on the next @xyflow bump. */
+.atlas-root .react-flow__node:focus-visible,
+.atlas-root .react-flow__node.selectable:focus-visible {
+  outline: 2px dashed var(--select);
+  outline-offset: 3px;
+}
+
 /* Handles exist only so React Flow renders edges — never show them. */
 .atlas-handle {
   opacity: 0;

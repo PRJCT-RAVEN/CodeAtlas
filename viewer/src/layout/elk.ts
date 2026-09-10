@@ -563,7 +563,10 @@ export async function layoutGraph(
         ir: irNode,
         parentId,
         isContainer: isContainer(child.id),
-        collapsed: collapsed.has(child.id),
+        // A node with no IR children is never "collapsed", whatever the store says:
+        // that combination draws a "+" chip promising children that do not exist.
+        // `leafSize` above already sizes it as a leaf; this keeps the mark consistent.
+        collapsed: collapsed.has(child.id) && (irChildren.get(child.id) ?? 0) > 0,
         x: child.x ?? 0,
         y: child.y ?? 0,
         width: child.width ?? 120,

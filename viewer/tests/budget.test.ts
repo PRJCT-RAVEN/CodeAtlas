@@ -44,10 +44,65 @@ describe("visibility budget", () => {
   });
   it("collapses whole levels, deepest first, so every table survives and every column hides", () => {
     const g = db(3, 40, 10); // 3 + 120 + 1200 = 1323
-    const r = autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 });
+    // 130: the whole table level is needed to reach it (123 visible), so no level is partial
+    const r = autoCollapse(g, new Set(), { maxVisible: 130, maxEdges: 10_000 });
     expect(r.collapse.every((id) => id.startsWith("table:"))).toBe(true);
     expect(r.visible).toBe(3 + 120); // every table collapsed, nothing else
     expect(r.hidden).toBe(1200);
+    expect(r.levels).toEqual([1]); // a WHOLE level: the store may collapse newcomers there
+  });
+  it("folds only as much of the last level as the budget needs", () => {
+    const g = db(3, 40, 10); // 1323 display nodes, 200 allowed
+    const r = autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 });
+    expect(r.visible).toBeLessThanOrEqual(200);
+    expect(r.visible).toBeGreaterThan(180); // NOT 123: the whole level is not taken to save 3 nodes
+    expect(r.collapse.length).toBeLessThan(120);
+    expect(r.levels).toEqual([]); // partial: the store must not finish the level off next poll
+  });
+  it("does not fold a 600-table schema into one chip to get 3 nodes under the cap", () => {
+    // The finding's case: 603 display nodes at the table level against a 600 budget,
+    // and ~1,190 aggregated foreign keys against an 800 edge budget.
+    const g = db(3, 200, 12); // 3 + 600 + 7200
+    const r = autoCollapse(g, new Set(), DEFAULT_BUDGET);
+    expect(r.visible).toBeGreaterThan(200); // was 3 (both phases took a whole level)
+    expect(r.visible).toBeLessThanOrEqual(DEFAULT_BUDGET.maxVisible);
+    expect(r.edges).toBeLessThanOrEqual(DEFAULT_BUDGET.maxEdges);
+    expect(r.collapse.filter((id) => id.startsWith("schema:")).length).toBe(1); // one schema, not the level
+  });
+  it("stays a few nodes over budget rather than folding the only container above the tables", () => {
+    // One schema, 600 tables: there is nothing to fold partially, so the level is
+    // refused outright — 601 chips beats one, and the layout has a tier for it.
+    const g = db(1, 600, 8);
+    const r = autoCollapse(g, new Set(), DEFAULT_BUDGET);
+    expect(r.collapse).not.toContain("schema:s0");
+    expect(r.visible).toBe(1 + 600);
+    expect(r.edges).toBeGreaterThan(DEFAULT_BUDGET.maxEdges); // the edge cap yields, not the view
+  });
+  it("keeps the refusal across BOTH phases, not just the node phase", () => {
+    // The first fix guarded only the node phase, so the edge phase folded the very level
+    // the node phase had refused: the 600-table cliff moved to ~810 tables (where the
+    // aggregated foreign keys pass 2x the edge budget) instead of going away. Both sizes
+    // below sit above that line and must still render as tables, not as one chip.
+    for (const tables of [820, 1000]) {
+      const g = db(1, tables, 8);
+      const r = autoCollapse(g, new Set(), DEFAULT_BUDGET);
+      expect(r.collapse, `${tables} tables`).not.toContain("schema:s0");
+      expect(r.visible, `${tables} tables`).toBe(1 + tables);
+      // grossly over the edge cap — and still refused, because the node phase said so
+      expect(r.edges, `${tables} tables`).toBeGreaterThan(2 * DEFAULT_BUDGET.maxEdges);
+    }
+    // …but grossly over BOTH caps there is no context worth protecting: everything folds.
+    expect(autoCollapse(db(1, 1200, 8), new Set(), DEFAULT_BUDGET).visible).toBe(1);
+  });
+  it("`collapse to fit` is never a silent no-op: an explicit ask overrides the guard", () => {
+    // The same guard made the button do nothing between 801 and 2x the budget — the exact
+    // band where the render warning offers it. `force` is what the store passes there.
+    const g = db(1, 820, 8);
+    const auto = autoCollapse(g, new Set(), DEFAULT_BUDGET);
+    expect(auto.collapse).not.toContain("schema:s0"); // automatic: refused, as above
+    const asked = autoCollapse(g, new Set(auto.collapse), DEFAULT_BUDGET, new Set(), new Set(), true);
+    expect(asked.collapse, "the button must change something").not.toEqual([]);
+    expect(asked.visible).toBeLessThanOrEqual(DEFAULT_BUDGET.maxVisible);
   });
   it("moves up a level when collapsing every table is not enough", () => {
     const g = db(4, 300, 3); // 4 + 1200 + 3600
@@ -87,9 +142,9 @@ describe("visibility budget", () => {
 describe("uniform levels", () => {
   it("collapses a newcomer at a depth an earlier pass collapsed, even under budget", () => {
     const g = db(3, 40, 10);
-    const first = autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 });
-    expect(first.levels).toEqual([1]); // the table level
-    const later = autoCollapse(g, new Set(first.collapse.filter((id) => id !== "table:s1.t5")), { maxVisible: 200, maxEdges: 10_000 }, new Set(), new Set(first.levels));
+    const first = autoCollapse(g, new Set(), { maxVisible: 130, maxEdges: 10_000 });
+    expect(first.levels).toEqual([1]); // the table level, taken whole
+    const later = autoCollapse(g, new Set(first.collapse.filter((id) => id !== "table:s1.t5")), { maxVisible: 130, maxEdges: 10_000 }, new Set(), new Set(first.levels));
     expect(later.collapse).toEqual(["table:s1.t5"]);
     expect(later.levels).toEqual([1]);
   });
@@ -99,9 +154,10 @@ describe("uniform levels", () => {
 // memoised), so every walk in budget.ts has to be iterative too: before this,
 // depthOf/sizeOf/countVisible/visibleBelow recursed per link and threw
 // "RangeError: Maximum call stack size exceeded" out of setIR, which killed the
-// live poll loop for good. Cost is still quadratic in the number of DISTINCT
-// depths (one budget level each): 2k deep ≈ 30 ms, 20k ≈ 5.7 s — pathological
-// input only, real graphs are a handful of levels deep.
+// live poll loop for good. Every distinct depth is its own budget level, so the
+// pass also has to be LINEAR in them: while it recomputed the visible count and
+// the ancestor walk per level, 10k deep cost 1.5 s and 20k cost 5.7 s (measured
+// 2026-09-10). With the counts kept incrementally: 19 ms and 26 ms.
 describe("pathologically deep graphs", () => {
   function deepChain(n: number): GraphIR {
     const nodes: GraphIR["nodes"] = [{ id: "n0", kind: "view", name: "root" }];
@@ -119,6 +175,15 @@ describe("pathologically deep graphs", () => {
     const r = autoCollapse(g, new Set(), DEFAULT_BUDGET, new Set(), new Set());
     expect(r.visible).toBeLessThanOrEqual(DEFAULT_BUDGET.maxVisible);
     expect(r.total).toBe(1999); // every node but the root is a display node
+  });
+
+  it("stays linear in the number of depth levels", () => {
+    const g = deepChain(20000); // 19,999 levels of one container each
+    const t0 = performance.now();
+    const r = autoCollapse(g, new Set(), DEFAULT_BUDGET, new Set(), new Set());
+    const ms = performance.now() - t0;
+    expect(r.visible).toBeLessThanOrEqual(DEFAULT_BUDGET.maxVisible);
+    expect(ms, `${Math.round(ms)} ms`).toBeLessThan(500); // 5,700 ms when each level recounted the graph
   });
 
   it("survives a wide flat container of 20,000 children", () => {

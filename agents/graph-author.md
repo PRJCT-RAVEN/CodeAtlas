@@ -30,10 +30,15 @@ orchestrator wants (or the level of detail), and the OUTPUT PATH. Write only to 
 - `count` is allowed without `locs` (multiplicity of a conceptual edge); if both are present
   `count === locs.length`.
 - `loc`/`locs` are `{file, line, col?}`; file paths relative to `attrs.absRoot`, or absolute.
+  FORWARD slashes on every platform, Windows included: a RELATIVE `loc.file` containing a
+  backslash is rejected by the validator (an absolute `C:\src\App.tsx` or a UNC path is fine).
 - Kinds: structural `package|module|file|type|function|property` and edge kinds
   `imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes`; for
   conceptual views invent short verb-like kinds (`step:`, `store:`, `queue:`; edges
   `sends`, `mutates`, `triggers`). The viewer styles unknown kinds automatically.
+  A kind and an id prefix are `[a-z][a-z0-9_]*` — lowercase letters, digits, underscore.
+  `routes_to`, never `routes-to` or `routesTo`: the edge id embeds the kind, so a hyphen
+  makes `e:<kind>:<from>-><to>` ambiguous. The validator reports it on `/edges/N/kind`.
 - `annotations.<id>`: `summary`, `importance` (0..1), `label`, `collapsedByDefault`
   (containers), `inferred: true` (edges), `feedback: true` (the edge of a cycle to draw
   upward, e.g. a retry loop).

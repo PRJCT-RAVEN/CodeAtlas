@@ -4,10 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateDocument } from "../validate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VALIDATE = join(here, "..", "validate.mjs");
@@ -303,6 +304,77 @@ test("non-JSON and non-object documents", () => {
   expectInvalid("null", "must be");
 });
 
+test("relative loc.file with backslashes is rejected; absolute paths are left alone", () => {
+  const d = base();
+  node(d, A).loc = { file: "Sources\\App\\A.swift", line: 3 };
+  // the path is JSON-quoted in the message, so a backslash shows as an escaped pair —
+  // that is what keeps a loc.file with a newline in it from breaking one-error-per-line
+  expectInvalid(d, `node ${A}`, '"Sources\\\\App\\\\A.swift"', "forward slashes");
+  const withEdgeLoc = base();
+  edge(withEdgeLoc, `e:calls:${F}->${B}`).locs = [{ file: "Sources\\App\\A.swift", line: 6 }];
+  expectInvalid(withEdgeLoc, `edge e:calls:${F}->${B}`, "forward slashes");
+  // The contract is about RELATIVE paths: an absolute Windows path (or a UNC one) is legal.
+  const abs = base();
+  node(abs, A).loc = { file: "C:\\src\\App\\A.swift", line: 3 };
+  node(abs, B).loc = { file: "\\\\build\\share\\B.swift", line: 3 };
+  expectValid(abs);
+});
+
+test("an edge kind outside [a-z][a-z0-9_]* is reported on the kind, not only on the id", () => {
+  const d = base();
+  const e = edge(d, `e:calls:${F}->${B}`);
+  e.kind = "routes-to";
+  e.id = `e:routes-to:${F}->${B}`;
+  d.edges.sort(byteCmp);
+  const r = expectInvalid(d, "must match pattern", "routes-to");
+  assert.match(r.err, /\/edges\/\d+\/kind must match pattern/);
+});
+
+test("a pattern error names the offending value, quoted so it stays on one line", () => {
+  const d = base();
+  const bad = "doc:we\nird.txt"; // a real filename fs2ir once turned into an id
+  d.nodes.push({ id: bad, kind: "doc", name: "weird", parent: ROOT });
+  d.edges.push(contains(ROOT, bad));
+  d.nodes.sort(byteCmp);
+  d.edges.sort(byteCmp);
+  const r = expectInvalid(d, "must match pattern", '"doc:we\\nird.txt"');
+  assert.ok(!r.err.includes(bad), `the raw newline must not break the one-error-per-line output:\n${r.err}`);
+});
+
+test("130k schema errors are capped instead of overflowing the stack (~8 s)", () => {
+  // The old code spread the whole ajv error array into push() as call arguments; past
+  // ~120k V8 threw RangeError, which the CLI caught and mislabelled as a parse error.
+  const nodes = [{ id: ROOT, kind: "module", name: "App" }];
+  for (let i = 0; i < 130_000; i++) nodes.push(i); // every item: "must be object"
+  const errors = validateDocument({
+    irVersion: "0.2", generator: { tool: "test", version: "1", commit: null },
+    root: ROOT, nodes, edges: [],
+  });
+  assert.equal(errors.length, 200); // MAX_SCHEMA_ERRORS; the rest are COUNTED, not formatted
+  assert.match(errors[0], /\/nodes\/1 must be object/);
+  // The count of what was dropped rides alongside as a non-enumerable property: a summary
+  // string in the array itself sat at index 200, past the CLI's own 50-line cut, so it
+  // never printed — and the line that did print said "and 151 more" for 130k errors.
+  assert.equal(errors.dropped, 129_800);
+  assert.ok(!Object.keys(errors).includes("dropped"), "dropped must not be enumerable");
+  assert.ok(!errors.some((e) => /more schema errors/.test(e)), "no summary string among the messages");
+});
+
+test("the CLI's \u201c… and N more\u201d counts every problem, not just the ones it formatted", () => {
+  const nodes = [{ id: ROOT, kind: "module", name: "App" }];
+  for (let i = 0; i < 1_000; i++) nodes.push(i);
+  const r = run(JSON.stringify({
+    irVersion: "0.2", generator: { tool: "test", version: "1", commit: null },
+    root: ROOT, nodes, edges: [],
+  }));
+  assert.equal(r.code, 1);
+  // 1,000 bad nodes → ajv reports one "must be object" each (plus the parent chain checks
+  // it cannot run). 50 are printed; the tail line must not claim only 151 are left.
+  const m = r.err.match(/… and (\d+) more/);
+  assert.ok(m, `expected a truncation line:\n${r.err}`);
+  assert.ok(Number(m[1]) >= 900, `the truncation line must count real problems, got "${m[0]}"`);
+});
+
 // --- --patch -----------------------------------------------------------------
 
 test("--patch with null does not crash (INVALID, exit 1)", () => {
@@ -356,6 +428,45 @@ test("multiple files: each reported, exit 1 if any invalid", () => {
   const all = run([base(), base()]);
   assert.equal(all.code, 0);
   assert.equal((all.out.match(/^VALID: /gm) ?? []).length, 2);
+});
+
+test("invoked through a symlinked path the CLI still validates (never a silent exit 0)", (t) => {
+  // import.meta.url is realpath'd by the ESM loader, process.argv[1] is not, so the plain
+  // href comparison is false for `node /tmp/…/validate.mjs` on macOS (/tmp -> /private/tmp):
+  // main() never ran, nothing was printed and `validate && mv` published unchecked.
+  const dir = mkdtempSync(join(tmpdir(), "validate-symlink-"));
+  try {
+    const link = join(dir, "validate.mjs");
+    try {
+      symlinkSync(VALIDATE, link);
+    } catch (e) {
+      if (e.code !== "EPERM") throw e;
+      return t.skip("symlink creation needs Developer Mode or elevation on Windows");
+    }
+    const file = join(dir, "g.json");
+    writeFileSync(file, JSON.stringify({}));
+    const r = spawnSync("node", [link, file], { encoding: "utf8" });
+    assert.equal(r.status, 1, `expected exit 1\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /^INVALID: /m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("missing ajv names the dependency and exits 2, not an ERR_MODULE_NOT_FOUND stack", () => {
+  // The validator is what every publish goes through, so its own missing deps must be
+  // actionable: subagents told to validate can neither install nor fix a resolver stack.
+  const dir = mkdtempSync(join(tmpdir(), "validate-nodeps-"));
+  try {
+    for (const f of ["validate.mjs", "ir.schema.json"]) copyFileSync(join(here, "..", f), join(dir, f));
+    const r = spawnSync("node", [join(dir, "validate.mjs"), join(dir, "ir.schema.json")], { encoding: "utf8" });
+    assert.equal(r.status, 2, `expected exit 2\n${r.stderr}`);
+    assert.match(r.stderr, /dependency "ajv" is not installed/);
+    assert.match(r.stderr, /codeatlas-viewer\.mjs install/);
+    assert.ok(!/ERR_MODULE_NOT_FOUND/.test(r.stderr), r.stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("no files → usage, exit 2; unknown flag → exit 2", () => {

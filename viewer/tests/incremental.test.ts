@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { layoutGraph, type DisplayNode } from "../src/layout/elk";
-import { incrementalToggle, GAP } from "../src/layout/incremental";
-import { autoCollapse } from "../src/ir/budget";
+import { childIndex, incrementalToggle, GAP } from "../src/layout/incremental";
+import type { GraphIR } from "../src/ir/types";
 import { db } from "./budget.test";
 
 type Box = { x: number; y: number; w: number; h: number };
@@ -13,6 +13,11 @@ function absBoxes(nodes: DisplayNode[]): Map<string, Box> {
   }
   return abs;
 }
+/** The state these tests start from: schemas open, every table a chip. Spelled
+ *  out rather than taken from the visibility budget, whose policy is free to
+ *  change without invalidating what incremental relayout must do. */
+const allTables = (g: GraphIR) => new Set(g.nodes.filter((n) => n.kind === "table").map((n) => n.id));
+
 const overlap = (a: Box, b: Box) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
 function checkInvariants(nodes: DisplayNode[]) {
@@ -43,7 +48,7 @@ function checkInvariants(nodes: DisplayNode[]) {
 describe("incremental relayout", () => {
   it("expands one table in place: subtree laid out, neighbours pushed, unrelated nodes untouched, routes kept", async () => {
     const g = db(3, 40, 10);
-    const collapsed = new Set(autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 }).collapse);
+    const collapsed = allTables(g);
     const full = await layoutGraph(g, collapsed);
     const target = "table:s1.t5";
     const after = new Set(collapsed);
@@ -80,7 +85,7 @@ describe("incremental relayout", () => {
 
   it("collapses back to a chip and can expand a nested container afterwards", async () => {
     const g = db(3, 40, 10);
-    const collapsed = new Set(autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 }).collapse);
+    const collapsed = allTables(g);
     const full = await layoutGraph(g, collapsed);
     const t = "table:s2.t7";
     const open = new Set(collapsed);
@@ -141,10 +146,42 @@ describe("incremental relayout", () => {
   }, 120_000);
 });
 
+describe("childIndex", () => {
+  const wide = (children: number): GraphIR => {
+    const nodes: GraphIR["nodes"] = [
+      { id: "table:t", kind: "table", name: "t" },
+      { id: "table:other", kind: "table", name: "other", parent: "table:t" },
+    ];
+    for (let i = 0; i < children; i++) nodes.push({ id: `column:c${i}`, kind: "column", name: `c${i}`, parent: "table:t" });
+    return { irVersion: "0.2", generator: { tool: "test", version: "0", commit: null }, root: "table:t", nodes, edges: [] } as GraphIR;
+  };
+
+  it("groups children by parent in ir.nodes order", () => {
+    const kids = childIndex(wide(3));
+    expect(kids.get("table:t")).toEqual(["table:other", "column:c0", "column:c1", "column:c2"]);
+    expect(kids.get("column:c0")).toBeUndefined();
+  });
+
+  it("stays linear in a wide container instead of copying every sibling array", () => {
+    const g = wide(20_000);
+    // what the toggle used to do on the way to laying out a subtree
+    let t0 = performance.now();
+    const copied = new Map<string, string[]>();
+    for (const n of g.nodes) if (n.parent) copied.set(n.parent, [...(copied.get(n.parent) ?? []), n.id]);
+    const copyMs = performance.now() - t0;
+    t0 = performance.now();
+    const kids = childIndex(g);
+    const pushMs = performance.now() - t0;
+    expect(kids.get("table:t")).toEqual(copied.get("table:t"));
+    console.log(`childIndex over ${g.nodes.length} nodes in one container: copying ${Math.round(copyMs)} ms → appending ${Math.round(pushMs)} ms`);
+    expect(pushMs * 10).toBeLessThan(copyMs);
+  });
+});
+
 describe("stale base (a second toggle landed while a pass was pending)", () => {
   it("refuses to splice one toggle onto a base that is two toggles behind", async () => {
     const g = db(3, 40, 10);
-    const c0 = new Set(autoCollapse(g, new Set(), { maxVisible: 200, maxEdges: 10_000 }).collapse);
+    const c0 = allTables(g);
     const layout0 = await layoutGraph(g, c0);
     const c2 = new Set(c0);
     c2.delete("table:s1.t5");

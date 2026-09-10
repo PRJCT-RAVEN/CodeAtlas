@@ -1,0 +1,41 @@
+# The `audit` job in ci.yml fails the build on a high-severity advisory in a tree the
+# launcher installs on a user's machine. A gate with nothing behind it just goes red and
+# stays red, so this is the half that produces the fixing PR.
+#
+# npm ecosystems only: there is no Docker image, no GitHub-Actions pinning policy beyond
+# the `@v4` majors used in ci.yml, and no Swift package here any more.
+version: 2
+updates:
+  # viewer/ is the one that ships: `bin/codeatlas-viewer.mjs` runs `npm ci --omit=dev`
+  # here on every user's first start, so its lockfile IS the deployed artifact.
+  - package-ecosystem: npm
+    directory: /viewer
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per week for the routine bumps; anything that breaks CI is visible at once
+      # instead of spread over five branches.
+      viewer-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /schema
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      schema-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Dev-only (Playwright, for tools/shot.mjs). Monthly is enough — nothing here reaches a user.
+  - package-ecosystem: npm
+    directory: /tools
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

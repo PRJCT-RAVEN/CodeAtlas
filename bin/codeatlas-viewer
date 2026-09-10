@@ -3,6 +3,10 @@
 # Windows users get bin/codeatlas-viewer.cmd). Requires Node.js >= 20 on PATH.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# Only REPAIR a PATH that has no node at all (a GUI- or launchd-spawned environment
+# starts with a minimal one). Prepending these unconditionally demoted a
+# version-managed node — nvm, fnm, volta, asdf all work by sitting early in PATH — to
+# whatever stale binary /usr/local/bin still holds from an old nodejs.org .pkg.
+command -v node >/dev/null 2>&1 || export PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 command -v node >/dev/null 2>&1 || { echo "codeatlas-viewer: node not found on PATH (need Node.js >= 20): https://nodejs.org" >&2; exit 1; }
 exec node "$HERE/codeatlas-viewer.mjs" "$@"

@@ -3,7 +3,7 @@
 //   node validate.mjs [--quiet] <graph.json>...          validate full Graph IR documents
 //   node validate.mjs --patch [--quiet] <patch.json>...  validate abstraction-agent patches (spec F6)
 //
-// Exit codes: 0 every file valid · 1 at least one file invalid · 2 usage error.
+// Exit codes: 0 every file valid · 1 at least one file invalid · 2 usage error or missing deps.
 // --quiet (-q): print nothing, exit code only.
 //
 // Beyond JSON Schema, full-IR mode enforces these semantic invariants (one line per error,
@@ -19,15 +19,43 @@
 //     (count without locs is fine: multiplicity of a conceptual edge)
 //   - nodes and edges sorted by id in UTF-8 byte order (Buffer.compare) — the same
 //     order every producer must use; JavaScript `<` (UTF-16 code units) differs for astral chars
+//   - relative loc paths use forward slashes (absolute Windows paths are left alone)
 //
 // Also importable: `validateDocument(doc, { patch })` → string[] of errors.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
-import Ajv2020 from "ajv/dist/2020.js";
+import { dirname, join, posix, win32 } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// "Am I the entry point?" — compared through realpath as well, because the ESM loader
+// resolves symlinks in import.meta.url and argv[1] does not: invoked as
+// /tmp/…/validate.mjs on macOS (/tmp -> /private/tmp) the plain comparison is false, and
+// the CLI would print nothing and exit 0 — a silent pass for `validate && mv`.
+const isCli = isEntryPoint();
+function isEntryPoint() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  if (import.meta.url === pathToFileURL(entry).href) return true;
+  try { return import.meta.url === pathToFileURL(realpathSync(entry)).href; } catch { return false; }
+}
+
+// Every publish goes through this file, so a missing dependency has to read as "install
+// the deps": a bare ERR_MODULE_NOT_FOUND stack looks like the graph is at fault, and the
+// subagents that are told to validate until VALID can neither install nor fix it.
+let Ajv2020;
+try {
+  ({ default: Ajv2020 } = await import("ajv/dist/2020.js"));
+} catch (e) {
+  if (e?.code !== "ERR_MODULE_NOT_FOUND") throw e;
+  const msg =
+    `codeatlas: the validator's dependency "ajv" is not installed — run ` +
+    `\`node ${join(here, "..", "bin", "codeatlas-viewer.mjs")} install\` ` +
+    `(or \`npm install\` in ${here})`;
+  if (isCli) { console.error(msg); process.exit(2); }
+  throw new Error(msg);
+}
+
 const schema = JSON.parse(readFileSync(join(here, "ir.schema.json"), "utf8"));
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
@@ -36,6 +64,11 @@ const validateFull = ajv.getSchema(schema.$id);
 const validatePatch = ajv.getSchema(`${schema.$id}#/$defs/agentPatch`);
 
 const MAX_REPORTED = 50;
+// allErrors collects one ajv error per offending value, so a systematically broken producer
+// on a 100k-node graph reaches six figures. Formatting all of them is pointless (the CLI
+// prints MAX_REPORTED) and spreading them into push() as arguments overflows the stack —
+// which used to surface as a bogus "not readable/parseable JSON".
+const MAX_SCHEMA_ERRORS = MAX_REPORTED * 4;
 
 export function validateDocument(doc, { patch = false } = {}) {
   const errors = [];
@@ -55,11 +88,11 @@ export function validateDocument(doc, { patch = false } = {}) {
         `REJECTED (spec F6): patch touches forbidden top-level key(s): ${illegal.join(", ")} — ` +
           `agent patches may only modify clusters and annotations, never nodes or edges`
       );
-    if (!validatePatch(doc)) errors.push(...formatAjv(validatePatch.errors));
+    if (!validatePatch(doc)) pushAjv(errors, validatePatch.errors, doc);
     if (errors.length === 0) clusterChecks(doc, null, errors);
     return errors;
   }
-  if (!validateFull(doc)) errors.push(...formatAjv(validateFull.errors));
+  if (!validateFull(doc)) pushAjv(errors, validateFull.errors, doc);
   if (errors.length === 0) semanticChecks(doc, errors);
   return errors;
 }
@@ -160,6 +193,10 @@ function semanticChecks(ir, errors) {
     if (n.parent !== undefined && nodeById.has(n.parent) && !containsKey.has(`${n.parent}|${n.id}`))
       errors.push(`node ${n.id} has parent ${n.parent} but no mirrored edge e:contains:${n.parent}->${n.id}`);
 
+  // --- loc paths ---------------------------------------------------------------
+  for (const n of ir.nodes) checkLocPath(n.loc, `node ${n.id}`, errors);
+  for (const e of ir.edges) for (const l of e.locs ?? []) checkLocPath(l, `edge ${e.id}`, errors);
+
   // --- ordering (spec N2) ----------------------------------------------------
   for (const [what, arr] of [["nodes", ir.nodes], ["edges", ir.edges]]) {
     for (let i = 1; i < arr.length; i++)
@@ -189,15 +226,70 @@ function clusterChecks(doc, nodeById, errors, edgeIds = new Set()) {
         errors.push(`annotation for unknown id: ${key}`);
 }
 
-function formatAjv(ajvErrors) {
-  return (ajvErrors ?? []).map((e) => {
-    const extra = e.params?.additionalProperty
-      ? ` (${e.params.additionalProperty})`
-      : e.params?.allowedValues
-        ? ` (${e.params.allowedValues.join("|")})`
-        : "";
-    return `${e.instancePath || "/"} ${e.message}${extra}`;
+/** A RELATIVE loc path uses forward slashes on every platform (schema $defs/loc), so the
+ *  same repo yields the same locs everywhere and Open-in-editor can resolve them. An
+ *  absolute Windows path (C:\\src\\App.ts) is legal and left alone. */
+function checkLocPath(loc, where, errors) {
+  const file = loc?.file;
+  if (typeof file !== "string" || !file.includes("\\")) return;
+  if (posix.isAbsolute(file) || win32.isAbsolute(file)) return;
+  // JSON.stringify, not raw: a loc.file carrying a newline would otherwise split this
+  // error across lines and could forge one that reads like the validator's own output.
+  errors.push(
+    `${where}: relative loc.file ${JSON.stringify(file)} uses backslashes — repo-relative paths use forward slashes`
+  );
+}
+
+function pushAjv(errors, ajvErrors, doc) {
+  const all = ajvErrors ?? [];
+  const shown = Math.min(all.length, MAX_SCHEMA_ERRORS);
+  for (let i = 0; i < shown; i++) errors.push(formatAjv(all[i], doc));
+  if (all.length > shown) recordDropped(errors, all.length - shown);
+}
+
+/**
+ * Errors ajv found that this array does not carry, so the CLI's "… and N more" can count
+ * REAL problems: a 12,000-error document capped at MAX_SCHEMA_ERRORS used to report the
+ * same "and 151 more" as a 201-error one, understating it by two orders of magnitude.
+ *
+ * Non-enumerable on purpose. `validateDocument` returns a plain array of strings and
+ * callers iterate it, spread it and JSON.stringify it — a dropped COUNT must not appear
+ * among the messages.
+ */
+function recordDropped(errors, n) {
+  Object.defineProperty(errors, "dropped", {
+    value: (errors.dropped ?? 0) + n,
+    writable: true,
+    configurable: true,
+    enumerable: false,
   });
+}
+
+function formatAjv(e, doc) {
+  const extra = e.params?.additionalProperty
+    ? ` (${e.params.additionalProperty})`
+    : e.params?.allowedValues
+      ? ` (${e.params.allowedValues.join("|")})`
+      : "";
+  return `${e.instancePath || "/"} ${e.message}${extra}${offendingValue(e.instancePath, doc)}`;
+}
+
+/** "/nodes/8/id must match pattern …" does not say WHICH id is at fault, and the value can
+ *  be unprintable (a newline in a filename), so it is quoted through JSON.stringify. */
+function offendingValue(instancePath, doc) {
+  if (!instancePath) return "";
+  let cur = doc;
+  for (const seg of instancePath.split("/").slice(1)) {
+    if (cur === null || typeof cur !== "object") return "";
+    cur = cur[seg.replace(/~1/g, "/").replace(/~0/g, "~")];
+  }
+  if (cur === undefined || (cur !== null && typeof cur === "object")) return ""; // containers say nothing useful
+  const shown = JSON.stringify(cur);
+  // Re-quote rather than cut: slicing a JSON string literal at 119 chars leaves an opening
+  // quote and no closing one, and can end mid-escape ("\u00e" ).
+  if (shown.length <= 120) return ` — got ${shown}`;
+  const clipped = typeof cur === "string" ? JSON.stringify(cur.slice(0, 100) + "…") : shown.slice(0, 119) + "…";
+  return ` — got ${clipped}`;
 }
 
 // --- CLI ----------------------------------------------------------------------
@@ -215,20 +307,31 @@ function main(argv) {
 
   let anyInvalid = false;
   for (const file of files) {
-    let errors;
+    let errors, doc;
     try {
       // `-` reads stdin; a UTF-8 BOM (some macOS editors write one) is stripped.
       const text = readFileSync(file === "-" ? 0 : file, "utf8").replace(/^\uFEFF/, "");
-      errors = validateDocument(JSON.parse(text), { patch });
+      doc = JSON.parse(text);
     } catch (e) {
       errors = [`not readable/parseable JSON: ${e.message}`];
+    }
+    if (!errors) {
+      try {
+        errors = validateDocument(doc, { patch });
+      } catch (e) {
+        // A crash in here is a validator bug; reporting it as a syntax error sends the
+        // user hunting for a parse error in a file that parses fine.
+        errors = [`internal validator error: ${e.message}`];
+      }
     }
     if (errors.length) {
       anyInvalid = true;
       if (!quiet) {
         console.error(`INVALID: ${file}`);
         for (const e of errors.slice(0, MAX_REPORTED)) console.error("  - " + e);
-        if (errors.length > MAX_REPORTED) console.error(`  … and ${errors.length - MAX_REPORTED} more`);
+        // both halves: messages held back here, plus the ones pushAjv never formatted
+        const hidden = Math.max(0, errors.length - MAX_REPORTED) + (errors.dropped ?? 0);
+        if (hidden) console.error(`  … and ${hidden} more`);
       }
     } else if (!quiet) {
       console.log(`VALID: ${file}${patch ? " (agent patch)" : ""}`);
@@ -241,6 +344,6 @@ function usage() {
   console.error("usage: node validate.mjs [--patch] [--quiet] <file.json>...");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCli) {
   process.exit(main(process.argv.slice(2)));
 }

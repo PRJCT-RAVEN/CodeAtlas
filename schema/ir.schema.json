@@ -60,12 +60,12 @@
     "nodeId": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*:.+$",
-      "description": "Stable node ID: kind prefix + fully-qualified path (never file offsets). Well-known prefixes: package, module, file, type, func (kind=function), prop (kind=property). Custom views may use any lowercase prefix (e.g. step:, store:, actor:)."
+      "description": "Stable node ID: kind prefix + fully-qualified path (never file offsets). The prefix is lowercase letters, digits and underscore only ([a-z][a-z0-9_]*) — no hyphens, no camelCase. Well-known prefixes: package, module, file, type, func (kind=function), prop (kind=property). Custom views may use any prefix in that charset (e.g. step:, store:, actor:, data_store:). Path segments use forward slashes, so the same symbol gets the same id on every platform."
     },
     "edgeId": {
       "type": "string",
       "pattern": "^e:[a-z][a-z0-9_]*:.+->.+$",
-      "description": "Stable edge ID: 'e:<kind>:<fromId>-><toId>'."
+      "description": "Stable edge ID: 'e:<kind>:<fromId>-><toId>'. The embedded kind is lowercase letters, digits and underscore only ([a-z][a-z0-9_]*) — a hyphen would make '->' ambiguous to anything splitting the id."
     },
     "clusterId": {
       "type": "string",
@@ -73,7 +73,7 @@
     },
     "loc": {
       "type": "object",
-      "description": "Source location, 1-based line and optional 1-based column. Paths are repo-root-relative with forward slashes (the root node's attrs.absRoot names the repo), or absolute.",
+      "description": "Source location, 1-based line and optional 1-based column. Paths are repo-root-relative with forward slashes on every platform (the root node's attrs.absRoot names the repo), or absolute. The validator rejects a relative path containing a backslash; an absolute Windows path (C:\\src\\App.ts) is left alone.",
       "properties": {
         "file": { "type": "string", "minLength": 1 },
         "line": { "type": "integer", "minimum": 1 },
@@ -135,7 +135,7 @@
             },
             "skipped": {
               "type": "object",
-              "description": "Counts of children a producer silently could not emit (fs2ir: fifo|socket|device|unreadable|ignored). Present only when at least one count is non-zero — truncation is never silent.",
+              "description": "Counts of children a producer silently could not emit (fs2ir: fifo|socket|device|unreadable|ignored|unrepresentable, the last being names carrying a character an IR id or a relative loc cannot hold). Present only when at least one count is non-zero — truncation is never silent.",
               "additionalProperties": { "type": "integer", "minimum": 0 }
             }
           },
@@ -156,8 +156,8 @@
         "id": { "$ref": "#/$defs/edgeId" },
         "kind": {
           "type": "string",
-          "minLength": 1,
-          "description": "Well-known kinds (imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes) get dedicated styling; any other string is allowed for conceptual views. `contains` always renders as nesting, never as an arrow, and must agree with the child's `parent`."
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Well-known kinds (imports|contains|calls|references|conforms_to|inherits|instantiates|reads|writes) get dedicated styling; any other kind is allowed for conceptual views, as long as it is lowercase letters, digits and underscore (routes_to, not routes-to or routesTo) — the id embeds it. `contains` always renders as nesting, never as an arrow, and must agree with the child's `parent`."
         },
         "from": { "$ref": "#/$defs/nodeId" },
         "to": { "$ref": "#/$defs/nodeId" },

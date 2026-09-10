@@ -6,6 +6,7 @@
 //   codeatlas-viewer start     install deps on first run, start vite on :5173, print URL + paths
 //   codeatlas-viewer stop      stop the instance this launcher started (--force: skip the
 //                              "is this really our process?" check)
+//   codeatlas-viewer restart   stop this launcher's instance and start it again (picks up a plugin update)
 //   codeatlas-viewer status    up/down, pid, URL, live dir (exit 1 when down)
 //   codeatlas-viewer open      open the viewer in the default browser (starts it if needed)
 //   codeatlas-viewer paths     print PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG
@@ -19,7 +20,7 @@
 // Requires Node.js >= 20 and npm.
 
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -39,6 +40,10 @@ const LIVE = join(DATA, "live");
 const LOG = join(DATA, "viewer.log");
 const PIDFILE = join(DATA, "viewer.pid");
 const STALE_DEPS = join(DATA, "deps-stale.json"); // set when an update failed and the old install was kept
+const RUNSTATE = join(DATA, "viewer.state.json"); // what the RUNNING instance was started with
+const LOCKFILE = join(DATA, "start.lock");
+const LOCK_STALE_MS = 10 * 60 * 1000; // a first-run `npm ci` is minutes; a crashed start must not block forever
+const LOCK_NEW_MS = 5_000; // grace for the gap between creating the lock file and writing it
 const URL_ = `http://localhost:${PORT}/`;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const VITE = join(ROOT, "viewer", "node_modules", "vite", "bin", "vite.js");
@@ -198,12 +203,7 @@ function installDeps() {
       /* the warning below is still printed */
     }
   };
-  const newer = (a, b) => existsSync(a) && (!existsSync(b) || statSync(a).mtimeMs > statSync(b).mtimeMs);
-  const viewer = join(ROOT, "viewer");
-  if (!existsSync(VITE) || newer(join(viewer, "package-lock.json"), join(viewer, "node_modules", ".package-lock.json"))) run(viewer, "viewer");
-  const schema = join(ROOT, "schema");
-  if (!existsSync(join(schema, "node_modules", "ajv")) || newer(join(schema, "package-lock.json"), join(schema, "node_modules", ".package-lock.json")))
-    run(schema, "validator", ["--omit=dev"]);
+  for (const { dir, label, extra } of outdatedDeps()) run(dir, label, extra);
   if (staleDeps.length === 0) {
     try {
       unlinkSync(STALE_DEPS); // everything is current again
@@ -211,6 +211,24 @@ function installDeps() {
       /* no marker */
     }
   }
+}
+
+/** The dependency trees that no longer match the plugin's lockfiles: nothing installed yet, or an update landed. */
+function outdatedDeps() {
+  const newer = (a, b) => existsSync(a) && (!existsSync(b) || statSync(a).mtimeMs > statSync(b).mtimeMs);
+  return [
+    // --omit=dev on BOTH: what a user runs is vite (a `dependencies` entry here on
+    // purpose), never vitest/typescript/@types. It is also what CI audits, so the gate
+    // and the install are the same tree — auditing less than we ship is worse than
+    // not auditing.
+    { label: "viewer", dir: join(ROOT, "viewer"), installed: VITE, extra: ["--omit=dev"] },
+    { label: "validator", dir: join(ROOT, "schema"), installed: join(ROOT, "schema", "node_modules", "ajv"), extra: ["--omit=dev"] },
+  ]
+    // `present`: is there an install here at all? "never installed" and "installed but the
+    // lockfile moved" both need `npm ci`, but only the SECOND means a running viewer is
+    // serving stale modules — see restartNeeded().
+    .map((d) => ({ ...d, present: existsSync(d.installed) }))
+    .filter((d) => !d.present || newer(join(d.dir, "package-lock.json"), join(d.dir, "node_modules", ".package-lock.json")));
 }
 
 /** The recorded "an update failed" state, or null. */
@@ -233,6 +251,64 @@ function warnStaleDeps() {
   console.error(`codeatlas-viewer:   an update failed on ${when} (npm ci exited ${r.exitCode}) and the previous`);
   console.error("codeatlas-viewer:   install was kept, so the viewer is running older packages than the plugin expects.");
   console.error("codeatlas-viewer:   Re-run `codeatlas-viewer install` once the network (or npm cache) is available.");
+}
+
+/** mtimes of the lockfiles and of the installed trees: the state a restart would change. */
+function depsFingerprint() {
+  const stamp = (...p) => {
+    try {
+      return Math.round(statSync(join(ROOT, ...p)).mtimeMs);
+    } catch {
+      return 0;
+    }
+  };
+  return {
+    viewerLock: stamp("viewer", "package-lock.json"),
+    viewerModules: stamp("viewer", "node_modules", ".package-lock.json"),
+    schemaLock: stamp("schema", "package-lock.json"),
+    schemaModules: stamp("schema", "node_modules", ".package-lock.json"),
+  };
+}
+
+/** Record what the instance we just started is running, so a later plugin update is detectable. */
+function recordRunState(pid) {
+  try {
+    writeFileSync(RUNSTATE, JSON.stringify({ pid, port: PORT, at: new Date().toISOString(), deps: depsFingerprint() }, null, 2) + "\n");
+  } catch {
+    /* advisory only */
+  }
+}
+
+/**
+ * The running viewer is serving dependencies the plugin no longer ships.
+ *
+ * vite restarts itself when its config or sources change, so a plugin update mostly
+ * self-heals — but a running process never reloads node_modules, and `start` answers
+ * "already up" before it ever looks at the lockfiles. Without this the viewer kept
+ * serving the pre-update packages (a vite security patch included) forever.
+ */
+function restartNeeded() {
+  // Only a tree that IS installed and has since gone stale means the running viewer holds
+  // old modules. A tree that was never installed says nothing about what is running — and
+  // against a viewer someone else started (tools/serve.sh never installs schema/), that
+  // read produced a confident "a plugin update? run restart" for a viewer that was current.
+  if (outdatedDeps().some((d) => d.present)) return true;
+  try {
+    const rec = JSON.parse(readFileSync(RUNSTATE, "utf8"));
+    const now = depsFingerprint();
+    return Object.keys(now).some((k) => rec.deps?.[k] !== now[k]);
+  } catch {
+    return false; // no record: started by an older build or by hand — do not nag
+  }
+}
+
+function warnRestartNeeded() {
+  // A failed update is a different story with different advice: warnStaleDeps() tells it.
+  if (staleDepsRecord() || !restartNeeded()) return;
+  console.error("");
+  console.error("codeatlas-viewer: NOTE — the viewer's dependencies changed since it started (a plugin update?).");
+  console.error("codeatlas-viewer:   A running instance never reloads node_modules, so it is still serving the old ones.");
+  console.error("codeatlas-viewer:   Run `codeatlas-viewer restart` to pick them up.");
 }
 
 /**
@@ -283,6 +359,116 @@ function printPaths() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Whoever owns the start lock, {pid, at} (pid 0 = unreadable), or null when free. */
+function lockHolder() {
+  let raw;
+  try {
+    raw = readFileSync(LOCKFILE, "utf8");
+  } catch {
+    return null; // free (or gone since we looked)
+  }
+  try {
+    const r = JSON.parse(raw);
+    if (Number.isInteger(r.pid) && r.pid > 0 && Number.isFinite(r.at)) return { pid: r.pid, at: r.at };
+  } catch {
+    /* half-written or corrupt — fall through to the file's own age */
+  }
+  // takeStartLock creates the file and writes it a moment later, so an empty lock is
+  // usually one being taken RIGHT NOW, not an abandoned one. mtime dates it; without
+  // that, two starts a millisecond apart both read `{pid: 0}`, both call it breakable
+  // and both proceed — the exact race the lock exists to stop.
+  try {
+    return { pid: 0, at: statSync(LOCKFILE).mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One rule for "this lock can be taken over", used by the taker AND the waiter.
+ * They disagreed before: `start` could sit for five minutes on a corrupt or long-stale
+ * lock that takeStartLock() would have broken instantly.
+ */
+function lockIsBreakable(held) {
+  if (!held) return true; // free
+  if (Date.now() - held.at >= LOCK_STALE_MS) return true; // abandoned: process.exit() skips `finally`
+  if (held.pid <= 0) return Date.now() - held.at >= LOCK_NEW_MS; // corrupt, and not mid-write
+  return !alive(held.pid); // the owner died
+}
+
+/**
+ * Serialise `start`: a release function, or null when another start owns the lock.
+ *
+ * Two starts at once (the codeatlas skill and the viewer skill, or two Claude sessions)
+ * both cleared the port check during the minutes `npm ci` takes, then installed into the
+ * same node_modules concurrently and raced for the port; the loser exited on --strictPort
+ * AFTER overwriting the pidfile, leaving a viewer that `stop` then refused to touch.
+ * Break a lock whose owner is gone or that is older than LOCK_STALE_MS — process.exit()
+ * skips `finally`, so a failed start can leave one behind.
+ */
+function takeStartLock() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(LOCKFILE, "wx");
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }) + "\n");
+      closeSync(fd);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        // Only if the lock is still OURS. A start slower than LOCK_STALE_MS gets its lock
+        // broken and handed on; unlinking unconditionally would then delete the NEW
+        // owner's lock and let a third start in beside it.
+        try {
+          const held = lockHolder();
+          if (held && held.pid === process.pid) unlinkSync(LOCKFILE);
+        } catch {
+          /* already released */
+        }
+      };
+    } catch (err) {
+      // Not "someone holds it": a read-only mount, ENOSPC, a denied EACCES. Reporting
+      // those as a concurrent start sent the user looking for a process that is not there.
+      if (err.code !== "EEXIST") die(`cannot create the start lock ${LOCKFILE}: ${err.message}`);
+      if (!lockIsBreakable(lockHolder())) return null;
+      try {
+        unlinkSync(LOCKFILE);
+      } catch {
+        /* another start broke it first */
+      }
+    }
+  }
+  return null;
+}
+
+function reportUp(already) {
+  console.log(already ? `codeatlas viewer already up at ${URL_}` : `codeatlas viewer up at ${URL_}`);
+  printPaths();
+  warnStaleDeps();
+  warnRestartNeeded();
+}
+
+/**
+ * Wait out another start that holds the lock (it may be inside a multi-minute `npm ci`).
+ * True when a viewer is up as a result; false when that start ended without one.
+ */
+async function waitForOtherStart() {
+  console.log("codeatlas-viewer: another start is already running — waiting for it…");
+  for (let i = 0; i < 600; i++) {
+    if (await up()) {
+      reportUp(true);
+      return true;
+    }
+    if (lockIsBreakable(lockHolder())) break; // released, killed mid-start, corrupt, or stale
+    await sleep(500);
+  }
+  if (await up()) {
+    reportUp(true);
+    return true;
+  }
+  return false;
+}
+
 async function start() {
   // Both dirs 0700, every time. These hold the user's graphs — which carry absolute
   // paths and the structure of private projects — and `mode` on mkdirSync only
@@ -297,14 +483,36 @@ async function start() {
       /* not ours to change, or a filesystem without modes */
     }
   }
-  if (await up()) {
-    console.log(`codeatlas viewer already up at ${URL_}`);
-    printPaths();
-    warnStaleDeps();
-    return;
+  if (await up()) return reportUp(true);
+  // Two attempts: take the lock, or wait for whoever holds it and try once more if that
+  // start ended without a viewer (it was killed, or it failed).
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const release = takeStartLock();
+    if (release) {
+      process.once("exit", release); // die() / process.exit() never run `finally`
+      try {
+        return await startExclusive();
+      } finally {
+        release();
+      }
+    }
+    if (await waitForOtherStart()) return;
   }
-  if (await portHeld()) die(`port :${PORT} is held by another process that is not the viewer. Free it or set CODEATLAS_PORT.`);
+  die(`another \`codeatlas-viewer start\` is in progress; check ${LOG}, or remove ${LOCKFILE} and retry.`);
+}
+
+/** The real start, with the start lock held. */
+async function startExclusive() {
+  // Re-check under the lock: the start we queued behind may have just brought it up.
+  if (await up()) return reportUp(true);
+  const refusePort = async () => {
+    if (await portHeld()) die(`port :${PORT} is held by another process that is not the viewer. Free it or set CODEATLAS_PORT.`);
+  };
+  await refusePort();
   installDeps();
+  // A first-run install takes minutes; nothing about the port is still known to be true.
+  if (await up()) return reportUp(true);
+  await refusePort();
   try {
     if (statSync(LOG).size > MAX_LOG_BYTES) renameSync(LOG, `${LOG}.1`);
   } catch {
@@ -319,18 +527,28 @@ async function start() {
     stdio: ["ignore", out, out],
     windowsHide: true,
   });
+  // Written before the health loop on purpose: a vite that comes up but never answers
+  // must still be stoppable. It is removed again below if the child is already dead.
   writeFileSync(PIDFILE, `${child.pid}\n`);
   writeStopScript();
   child.unref();
   for (let i = 0; i < 40; i++) {
     if (await up()) {
-      console.log(`codeatlas viewer up at ${URL_}`);
-      printPaths();
-      warnStaleDeps();
-      return;
+      recordRunState(child.pid);
+      return reportUp(false);
     }
     if (!alive(child.pid)) break;
     await sleep(500);
+  }
+  if (!alive(child.pid)) {
+    // A pidfile pointing at a dead pid is worse than none: `stop` then finds nothing to
+    // kill, sees the port answered by whatever won it, and exits 2 "not started by this
+    // launcher" — for good.
+    try {
+      unlinkSync(PIDFILE);
+    } catch {
+      /* never written */
+    }
   }
   console.error("codeatlas-viewer: viewer did not come up; last log lines:");
   try {
@@ -338,7 +556,32 @@ async function start() {
   } catch {
     /* nothing to show */
   }
+  if (alive(child.pid)) console.error(`codeatlas-viewer: pid ${child.pid} is still running but not answering — \`codeatlas-viewer stop\` ends it.`);
   process.exit(1);
+}
+
+/**
+ * Stop this launcher's instance and start it again.
+ *
+ * The only way a node_modules change (a plugin update) reaches a running viewer. Never
+ * touches a viewer this launcher did not start — that one is the user's to stop.
+ */
+async function restart() {
+  const live = pidAlive();
+  if (live) await stop();
+  else if (await up()) die(`a viewer answers on :${PORT} but was not started by this launcher; stop it yourself, then run start`, 2);
+  await start();
+}
+
+/** Drop the pidfile and the record of what the (now stopped) instance was running. */
+function forgetRunState() {
+  for (const f of [PIDFILE, RUNSTATE]) {
+    try {
+      unlinkSync(f);
+    } catch {
+      /* fine */
+    }
+  }
 }
 
 async function stop({ force = false } = {}) {
@@ -380,19 +623,11 @@ async function stop({ force = false } = {}) {
     if (!(await waitGone(live.pid))) {
       die(`pid ${live.pid} is still alive after the kill; the viewer was NOT stopped`, 2);
     }
-    try {
-      unlinkSync(PIDFILE);
-    } catch {
-      /* fine */
-    }
+    forgetRunState();
     console.log("codeatlas viewer stopped");
     return;
   }
-  try {
-    unlinkSync(PIDFILE);
-  } catch {
-    /* fine */
-  }
+  forgetRunState();
   if (await up()) {
     console.log(`a viewer answers on :${PORT} but was not started by this launcher; not touching it`);
     process.exit(2);
@@ -409,13 +644,28 @@ async function status() {
   else console.log("down");
   printPaths();
   warnStaleDeps();
+  if (isUp) warnRestartNeeded();
   if (!isUp) process.exit(1);
+}
+
+/**
+ * Hand the URL to the platform's opener, degrading to the printed URL.
+ *
+ * A failed spawn emits 'error' asynchronously and `.unref()` does NOT suppress it, so
+ * without this listener `open` on a box with no xdg-open (headless Linux, a minimal
+ * container, WSL without wslu) died with an unhandled-error stack trace and exit 1 —
+ * after the viewer had already started, and with no fix named for the user to follow.
+ */
+function launchBrowser() {
+  const [cmd, args] = WIN ? ["cmd", ["/c", "start", "", URL_]] : platform() === "darwin" ? ["open", [URL_]] : ["xdg-open", [URL_]];
+  const child = spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
+  child.on("error", () => console.error(`codeatlas-viewer: could not run ${cmd} — open ${URL_} in a browser yourself`));
+  child.unref();
 }
 
 async function openBrowser() {
   if (!(await up())) await start();
-  if (WIN) spawn("cmd", ["/c", "start", "", URL_], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-  else spawn(platform() === "darwin" ? "open" : "xdg-open", [URL_], { detached: true, stdio: "ignore" }).unref();
+  launchBrowser();
   console.log(URL_);
 }
 
@@ -443,6 +693,9 @@ if (isMain) switch (cmd) {
   case "stop":
     await stop({ force: process.argv.includes("--force") });
     break;
+  case "restart":
+    await restart();
+    break;
   case "status":
     await status();
     break;
@@ -463,8 +716,8 @@ if (isMain) switch (cmd) {
   case "-h":
   case "--help":
   case "help":
-    console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 18).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 19).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
     break;
   default:
-    die(`unknown command: ${cmd} (start|stop|status|open|paths|install)`);
+    die(`unknown command: ${cmd} (start|stop|restart|status|open|paths|install)`);
 }

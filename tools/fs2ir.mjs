@@ -11,8 +11,9 @@
 // `overflow` summary node — never silently. --max-children caps files+links AND
 // subdirectories (each list separately; one overflow node carries the sum).
 // Entries that cannot become nodes (FIFOs, sockets, devices, unreadable
-// directories, ignored/hidden names) are COUNTED into the affected dir node's
-// attrs.skipped {fifo, socket, device, unreadable, ignored} — omitted when all zero.
+// directories, ignored/hidden names, names the IR contract cannot carry) are COUNTED
+// into the affected dir node's attrs.skipped {fifo, socket, device, unreadable,
+// ignored, unrepresentable} — omitted when all zero.
 //
 // --sizes: every `doc` node gets attrs.scale = clamp(1 + log10(max(bytes,1)/1024)/2, 1, 2.6)
 // rounded to 2 decimals (1 KB → 1.0, 100 KB → 2.0, ≥ ~1.6 MB → 2.6). The viewer multiplies
@@ -31,6 +32,11 @@ const DEFAULT_IGNORES = new Set([
   ".git", "node_modules", ".build", "build", "dist", "__pycache__",
   ".venv", ".venv-tier2", ".cache", "coverage", ".DS_Store", ".idea", ".vscode",
 ]);
+// A line terminator can never appear in an IR id (JSON-Schema `.` does not match one, so
+// the id pattern rejects it) and a backslash breaks the forward-slash contract for relative
+// locs. Such an entry is counted into attrs.skipped, not silently dropped and not mangled:
+// its name is also its loc, and an escaped loc would no longer open the real file.
+const UNREPRESENTABLE = /[\n\r\u2028\u2029\\]/;
 const USAGE = "usage: fs2ir.mjs <root> [-o out.json] [--depth N] [--max-children M] [--max-nodes T] [--ignore name] [--include-hidden] [--abs-locs] [--sizes]";
 
 // --- args ---------------------------------------------------------------------
@@ -112,7 +118,7 @@ function walk(absPath, rel, parentId, depth) {
   else node.attrs = { absRoot: absPath };
   nodes.push(node);
 
-  const skipped = { fifo: 0, socket: 0, device: 0, unreadable: 0, ignored: 0 };
+  const skipped = { fifo: 0, socket: 0, device: 0, unreadable: 0, ignored: 0, unrepresentable: 0 };
   const finish = () => {
     const nonZero = Object.fromEntries(Object.entries(skipped).filter(([, v]) => v > 0));
     if (Object.keys(nonZero).length) node.attrs = { ...(node.attrs ?? {}), skipped: nonZero };
@@ -129,6 +135,7 @@ function walk(absPath, rel, parentId, depth) {
   const entries = [];
   for (const e of all) {
     if (skipName(e.name)) { skipped.ignored++; continue; }
+    if (UNREPRESENTABLE.test(e.name)) { skipped.unrepresentable++; continue; }
     if (e.isFIFO()) { skipped.fifo++; continue; }
     if (e.isSocket()) { skipped.socket++; continue; }
     if (e.isBlockDevice() || e.isCharacterDevice()) { skipped.device++; continue; }

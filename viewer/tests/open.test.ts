@@ -1,9 +1,12 @@
-// /open endpoint resolution + request gate (viewer/vite.config.ts).
+// /open endpoint resolution + request gate, and the dev server's loopback bind
+// (viewer/vite.config.ts).
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
-import { platform, tmpdir } from "node:os";
+import { platform, tmpdir, networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { resolveLocFile, allowedRoots, isSystemPath, systemPrefixes, sameOrigin, hostAllowed, localRequest, editorCommands, liveFilePath, safeForGenericOpen, substituteToken, loopbackPeer, liveEtag, notModified, cmdEscapeArg, cmdEscapeCommand, resolveOnPath, spawnDetached } from "../vite.config";
 
 // a fake $HOME with a repo inside it and a file outside it
@@ -255,4 +258,84 @@ describe("system-path fence", () => {
     // /etc/hosts must not inherit the project's blessing
     expect(resolveLocFile("Sources/etc-link.txt", null, [repo], home)).toBeNull();
   });
+});
+
+/**
+ * Both loopback families answer.
+ *
+ * Vite's default host (`localhost`) resolves to ONE address — `::1` on macOS — so
+ * `http://127.0.0.1:5173` was refused while `http://localhost:5173` worked: browsers
+ * retry the other family, the launcher's port probe and hand-written curl do not.
+ * Boots the real config, so it covers both the `server.host` bind and the twin listener.
+ */
+describe("dev server binding", () => {
+  /** Some CI containers have no IPv6 at all; the twin listener is best-effort there. */
+  const canBindIPv6 = () =>
+    new Promise<boolean>((done) => {
+      const s = createNetServer();
+      s.once("error", () => done(false));
+      s.listen(0, "::1", () => s.close(() => done(true)));
+    });
+
+  /** An OS-chosen free port: vite's default 5173 is very likely to be a live viewer. */
+  const freePort = () =>
+    new Promise<number>((done) => {
+      const s = createNetServer();
+      s.listen(0, "127.0.0.1", () => {
+        const { port } = s.address() as AddressInfo;
+        s.close(() => done(port));
+      });
+    });
+
+  /** The twin binds a tick after the primary is listening, so give it a few retries. */
+  async function status(url: string, tries = 40): Promise<number> {
+    for (let i = 0; ; i++) {
+      try {
+        return (await fetch(url)).status;
+      } catch (e) {
+        // "fetch failed" alone would not say WHICH family never came up
+        if (i >= tries) throw new Error(`nothing listening on ${url}: ${(e as Error).message}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+  }
+
+  /** This machine's non-loopback IPv4 addresses — what "wider" would actually mean. */
+  const lanAddresses = () =>
+    Object.values(networkInterfaces())
+      .flat()
+      .filter((i): i is NonNullable<typeof i> => !!i && i.family === "IPv4" && !i.internal)
+      .map((i) => i.address);
+
+  it("serves 127.0.0.1 and [::1], and binds nothing wider", async () => {
+    const { createServer } = await import("vite");
+    // The daemon-only plugins key off these, and this test boots the REAL config: with a
+    // CODEATLAS_LIVE_DIR in the ambient shell (which this project's own developer has),
+    // the uninstall watchdog would attach a timer to a server the test then closes.
+    const saved = { live: process.env.CODEATLAS_LIVE_DIR, log: process.env.CODEATLAS_LOG };
+    delete process.env.CODEATLAS_LIVE_DIR;
+    delete process.env.CODEATLAS_LOG;
+    const server = await createServer({
+      configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)),
+      logLevel: "silent",
+      server: { port: await freePort() }, // host comes from the config file — that is what is under test
+      optimizeDeps: { noDiscovery: true },
+    });
+    await server.listen();
+    try {
+      const { address, port } = server.httpServer!.address() as AddressInfo;
+      expect(address).toBe("127.0.0.1"); // never 0.0.0.0 / :: — /open shells out
+      expect(await status(`http://127.0.0.1:${port}/`)).toBe(200);
+      if (await canBindIPv6()) expect(await status(`http://[::1]:${port}/`)).toBe(200);
+      // "binds nothing wider" was in the name but never checked: a 0.0.0.0 bind answers
+      // on every interface, and `address` alone would not have caught a second listener.
+      for (const lan of lanAddresses()) {
+        await expect(fetch(`http://${lan}:${port}/`, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
+      }
+    } finally {
+      await server.close();
+      if (saved.live !== undefined) process.env.CODEATLAS_LIVE_DIR = saved.live;
+      if (saved.log !== undefined) process.env.CODEATLAS_LOG = saved.log;
+    }
+  }, 30_000);
 });

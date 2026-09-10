@@ -349,28 +349,62 @@ describe("label pass on a dense graph", () => {
     return { irVersion: "0.2", generator: { tool: "test", version: "0", commit: null }, root: "package:P", nodes, edges } as GraphIR;
   }
 
-  it("never increases the collision penalty and reduces it where ELK left collisions", async () => {
-    const g = dense(300);
-    const raw = await layoutGraph(g, new Set(), { labelPass: false });
-    const fixed = await layoutGraph(g, new Set(), { labelPass: true });
+  /** Penalty of the chips a view would actually draw, before and after the pass
+   *  (ElkEdge falls back to the path midpoint when ELK placed no label). */
+  async function chips(g: GraphIR, collapsed: Set<string>) {
+    const raw = await layoutGraph(g, collapsed, { labelPass: false });
+    const fixed = await layoutGraph(g, collapsed, { labelPass: true });
     const abs = absBoxes(raw.nodes);
     const leaves = raw.nodes.filter((n) => !n.isContainer).map((n) => abs.get(n.ir.id)!);
     const containers = raw.nodes.filter((n) => n.isContainer).map((n) => abs.get(n.ir.id)!);
     const inputs = raw.edges.filter((e) => e.points).map((e) => ({ id: e.id, points: e.points!, w: labelWidth(e.label), h: 18 }));
-    const before = collisionPenalty(inputs, { leaves, containers }, new Map(raw.edges.map((e) => [e.id, e.labelPos!])));
-    const after = collisionPenalty(inputs, { leaves, containers }, new Map(fixed.edges.map((e) => [e.id, e.labelPos!])));
-    const moved = fixed.edges.filter((e, i) => e.labelPos!.x !== raw.edges[i].labelPos!.x || e.labelPos!.y !== raw.edges[i].labelPos!.y).length;
-    console.log(`dense(300): ${raw.edges.length} edges, penalty ${before} → ${after}, chips moved ${moved}`);
+    const at = (r: typeof raw) => new Map(r.edges.filter((e) => e.points).map((e) => [e.id, e.labelPos ?? midpoint(e.points!)]));
+    const from = at(raw);
+    const to = at(fixed);
+    let moved = 0;
+    for (const [id, p] of to) {
+      const b = from.get(id)!;
+      if (p.x !== b.x || p.y !== b.y) moved++;
+    }
+    return {
+      raw,
+      leaves,
+      inputs,
+      moved,
+      before: collisionPenalty(inputs, { leaves, containers }, from),
+      after: collisionPenalty(inputs, { leaves, containers }, to),
+      penalty: (pos: Map<string, { x: number; y: number }>) => collisionPenalty(inputs, { leaves, containers }, pos),
+    };
+  }
+
+  it("leaves ELK's inline placement alone when it is already clean", async () => {
+    // quality tier: ELK reserves room for every chip while layering, so on this
+    // graph there is nothing to fix and the pass must not fidget.
+    const { raw, leaves, inputs, before, after, moved, penalty } = await chips(dense(300), new Set());
     // the metric itself sees collisions: every chip parked on the first leaf
     const parked = new Map(raw.edges.map((e) => [e.id, { x: leaves[0].x + leaves[0].w / 2, y: leaves[0].y + leaves[0].h / 2 }]));
-    expect(collisionPenalty(inputs, { leaves, containers }, parked)).toBeGreaterThan(PENALTY.leaf * raw.edges.length);
+    expect(penalty(parked)).toBeGreaterThan(PENALTY.leaf * inputs.length);
     for (const e of raw.edges) expect(e.labelPos, e.id).toBeDefined();
-    expect(after).toBeLessThanOrEqual(before);
-    if (before > 0) {
-      expect(after).toBeLessThan(before);
-      expect(moved).toBeGreaterThan(0);
-    }
+    expect(before).toBe(0);
+    expect(after).toBe(0);
+    expect(moved).toBe(0);
   });
+
+  it("clears the pile-up on a fast-tier view, where chips start at path midpoints", async () => {
+    // 360 tables with ~700 foreign keys: past FAST_THRESHOLD, so ELK places no
+    // inline labels and every chip would otherwise sit at its path's midpoint,
+    // on top of the nodes the path runs between. This is the case the pass exists
+    // for, and the only one where it does real work.
+    const g = db(4, 90, 10);
+    const collapsed = new Set(g.nodes.filter((n) => n.kind === "table").map((n) => n.id));
+    const { raw, before, after, moved } = await chips(g, collapsed);
+    console.log(`db(4,90,10): ${raw.edges.length} edges, penalty ${before} → ${after}, chips moved ${moved}`);
+    expect(raw.mode.tier).toBe("fast");
+    expect(raw.edges.every((e) => e.labelPos === undefined)).toBe(true); // ELK placed none
+    expect(before).toBeGreaterThan(PENALTY.leaf * 10);
+    expect(after * 5).toBeLessThan(before);
+    expect(moved).toBeGreaterThan(raw.edges.length / 2);
+  }, 60_000);
 });
 
 describe("label grid indexing stays linear in segment length", () => {

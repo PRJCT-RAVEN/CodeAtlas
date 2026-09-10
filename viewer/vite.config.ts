@@ -6,6 +6,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer as createHttpServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 // GET /open?file=<path>&line=<n>[&root=<abs dir>][&dry] → open the loc in an editor.
@@ -582,7 +583,80 @@ const uninstallWatchdog = (marker: string): Plugin => ({
       server.close().then(bye, bye);
     }, UNINSTALL_CHECK_MS);
     // deliberately NOT unref'd: this timer is the only thing that stops an orphaned
-    // daemon, and it must run for as long as the server does
+    // daemon, and it must run for as long as the server does — but no longer. A closed
+    // server that keeps an un-unref'd interval alive holds the whole process open, which
+    // is a hang for anything that boots this config in-process and closes it again.
+    server.httpServer?.once("close", () => clearInterval(timer));
+  },
+});
+
+/**
+ * Loopback: answer on BOTH families, and never off this machine.
+ *
+ * A listening socket has ONE address, and vite's default host (`localhost`) resolves to
+ * one too — on macOS `::1` — so `http://127.0.0.1:5173` was refused while
+ * `http://localhost:5173` worked. Browsers and curl retry the other family, but a
+ * hardcoded IPv4 URL in a script, a probe or a proxy has nothing to retry.
+ *
+ * So bind IPv4 (`server.host` below — the address the launcher's port probe and the Swift
+ * `codeatlas serve` both use, so `--strictPort` now sees a real conflict) and let this
+ * plugin add a second listener on `::1` sharing the same middleware stack.
+ *
+ * Best effort by design: no IPv6 on the machine, or something else already on
+ * `[::1]:<port>`, is a warning, not a failed start. Only the two loopback literals are
+ * ever bound — `/open` shells out, so the dev server must stay unreachable from the
+ * network however this is configured.
+ */
+export const HOST = "127.0.0.1";
+export const HOST6 = "::1";
+
+const loopbackTwin = (): Plugin => ({
+  name: "codeatlas-loopback-twin",
+  configureServer(server) {
+    const primary = server.httpServer;
+    if (!primary) return; // middleware mode: whoever embeds us owns the socket
+    // configureServer runs before listen(), so this is registered ahead of vite's own
+    // 'listening' callback
+    primary.once("listening", () => {
+      const addr = primary.address();
+      // mirror our own bind only: a `--host` on the command line means the user asked
+      // for something else, and mirroring an exposed bind would widen it
+      if (!addr || typeof addr === "string" || addr.address !== HOST) return;
+      const twin = createHttpServer(server.middlewares);
+      // HMR is hooked to the PRIMARY's 'upgrade' event; hand the raw socket over as-is
+      twin.on("upgrade", (req, socket, head) => primary.emit("upgrade", req, socket, head));
+      const onBindError = (err: NodeJS.ErrnoException) => {
+        // EADDRINUSE is NOT a missing-IPv6 box: something else holds [::1]:<port>, and on
+        // a dual-stack machine `localhost` usually resolves to ::1 first — so the user's
+        // browser would reach THAT server at the address we just printed. --strictPort
+        // exists to make exactly this impossible, and it only guards the 127.0.0.1 bind.
+        // Refuse the same way vite refuses a taken port, rather than warn and serve a name
+        // that points somewhere else.
+        if (err.code === "EADDRINUSE") {
+          server.config.logger.error(
+            `[codeatlas] [${HOST6}]:${addr.port} is already in use by another process — ` +
+              `http://localhost:${addr.port}/ would reach it, not this viewer. Refusing to start; ` +
+              `stop that process or pick another port.`
+          );
+          void server.close().finally(() => process.exit(1));
+          return;
+        }
+        // no IPv6 at all (EAFNOSUPPORT / EADDRNOTAVAIL), or the OS declined it: the
+        // 127.0.0.1 front door is unaffected, and `localhost` falls back to it
+        server.config.logger.warn(
+          `[codeatlas] no IPv6 loopback listener on [${HOST6}]:${addr.port} (${err.message}) — http://${HOST}:${addr.port}/ is unaffected`
+        );
+      };
+      twin.once("error", onBindError);
+      twin.listen(addr.port, HOST6, () => {
+        // Past the bind, a stray error is not a bind failure: keeping onBindError attached
+        // made every later socket error claim the ::1 listener never came up.
+        twin.removeListener("error", onBindError);
+        twin.on("error", (err: Error) => server.config.logger.warn(`[codeatlas] [${HOST6}]:${addr.port}: ${err.message}`));
+      });
+      twin.unref(); // the primary decides how long the process lives
+      primary.once("close", () => twin.close());
+    });
   },
 });
 
@@ -591,8 +665,10 @@ const themeCss = process.env.CODEATLAS_THEME_CSS ? resolve(process.env.CODEATLAS
 const logFile = process.env.CODEATLAS_LOG ? resolve(process.env.CODEATLAS_LOG) : null;
 
 export default defineConfig({
+  server: { host: HOST },
   plugins: [
     react(),
+    loopbackTwin(),
     guardViteOpenInEditor(),
     openInEditor(),
     userTheme(themeCss),
