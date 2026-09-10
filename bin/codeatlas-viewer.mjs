@@ -19,7 +19,7 @@
 // Requires Node.js >= 20 and npm.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -152,6 +152,22 @@ function pidAlive() {
 function installDeps() {
   needNode();
   const run = (cwd, label, extra = []) => {
+    // `npm ci` DELETES node_modules before it installs, so a failure part-way — offline
+    // with a cold cache, a proxy, a registry outage — leaves nothing behind and turns a
+    // working viewer into a broken one on the next `start`. Move the existing tree aside
+    // first (a rename, not a copy) and put it back if the install does not complete.
+    const nm = join(cwd, "node_modules");
+    const bak = join(cwd, "node_modules.codeatlas-bak");
+    if (existsSync(bak)) rmSync(bak, { recursive: true, force: true }); // left by an earlier crash
+    let saved = false;
+    if (existsSync(nm)) {
+      try {
+        renameSync(nm, bak);
+        saved = true;
+      } catch {
+        /* same-filesystem rename should not fail; if it does, npm ci behaves as before */
+      }
+    }
     console.log(`codeatlas-viewer: installing ${label} dependencies…`);
     const args = ["ci", "--no-audit", "--no-fund", "--loglevel=error", ...extra];
     // Windows: npm is npm.cmd, which Node only spawns through a shell (CVE-2024-27980). One command
@@ -159,7 +175,16 @@ function installDeps() {
     const r = WIN
       ? spawnSync("npm.cmd " + args.join(" "), { cwd, stdio: "inherit", shell: true })
       : spawnSync("npm", args, { cwd, stdio: "inherit" });
-    if (r.status !== 0) die(`npm ci failed in ${cwd}`);
+    if (r.status === 0) {
+      if (saved) rmSync(bak, { recursive: true, force: true });
+      return;
+    }
+    if (!saved) die(`npm ci failed in ${cwd}`); // nothing to fall back to
+    rmSync(nm, { recursive: true, force: true }); // whatever the failed run left
+    renameSync(bak, nm);
+    // A slightly stale viewer beats no viewer: keep going rather than exiting.
+    console.error(`codeatlas-viewer: could not update ${label} dependencies (npm ci exited ${r.status}) — keeping the working install already on disk.`);
+    console.error(`codeatlas-viewer: the viewer may be running against slightly stale ${label} packages; re-run \`codeatlas-viewer install\` when the network is back.`);
   };
   const newer = (a, b) => existsSync(a) && (!existsSync(b) || statSync(a).mtimeMs > statSync(b).mtimeMs);
   const viewer = join(ROOT, "viewer");

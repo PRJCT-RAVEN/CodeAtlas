@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -138,4 +138,45 @@ test("a foreign server on the port is not mistaken for the viewer", { timeout: 3
     await new Promise((r) => foreign.close(r));
     rmSync(data, { recursive: true, force: true });
   }
+});
+
+// A failing `npm ci` must not destroy a working install. npm ci deletes node_modules
+// before installing, so offline-with-a-cold-cache used to leave the user with neither
+// the old dependencies nor new ones — a plugin update turned a working viewer into a
+// broken one. Verified against a real npm run pointed at an unreachable registry and
+// an empty cache, in a throwaway plugin root (never the real one).
+test("a failed dependency update keeps the install that was already working", { timeout: 120_000 }, () => {
+  const root = mkdtempSync(join(tmpdir(), "codeatlas-fakeplugin-"));
+  const marker = "codeatlas-test-marker";
+  for (const part of ["viewer", "schema"]) {
+    const dir = join(root, part);
+    mkdirSync(join(dir, "node_modules", marker), { recursive: true });
+    writeFileSync(join(dir, "node_modules", marker, "index.js"), "module.exports = 1;\n");
+    // a lockfile NEWER than node_modules/.package-lock.json is what triggers a reinstall
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: `fake-${part}`, version: "1.0.0", dependencies: { "left-pad": "^1.3.0" } }));
+    writeFileSync(join(dir, "package-lock.json"), JSON.stringify({
+      name: `fake-${part}`, version: "1.0.0", lockfileVersion: 3, requires: true,
+      packages: { "": { name: `fake-${part}`, version: "1.0.0", dependencies: { "left-pad": "^1.3.0" } },
+        "node_modules/left-pad": { version: "1.3.0", resolved: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz", integrity: "sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA==" } },
+    }));
+  }
+  mkdirSync(join(root, "bin"), { recursive: true });
+  cpSync(LAUNCHER, join(root, "bin", "codeatlas-viewer.mjs"));
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-fakedata-"));
+  const cache = mkdtempSync(join(tmpdir(), "codeatlas-emptycache-"));
+  const r = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "install"], {
+    encoding: "utf8",
+    env: { ...process.env, CODEATLAS_DATA: data,
+      npm_config_registry: "http://127.0.0.1:9", npm_config_cache: cache, npm_config_offline: "true" },
+  });
+  // the working install survived, in both directories
+  for (const part of ["viewer", "schema"]) {
+    assert.ok(existsSync(join(root, part, "node_modules", marker, "index.js")),
+      `${part}: the working node_modules was destroyed by a failed update`);
+    assert.ok(!existsSync(join(root, part, "node_modules.codeatlas-bak")), `${part}: backup left behind`);
+  }
+  assert.match(r.stderr, /keeping the working install/);
+  rmSync(root, { recursive: true, force: true });
+  rmSync(data, { recursive: true, force: true });
+  rmSync(cache, { recursive: true, force: true });
 });
