@@ -19,7 +19,7 @@
 // Requires Node.js >= 20 and npm.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -284,8 +284,19 @@ function printPaths() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function start() {
-  if (!existsSync(DATA)) mkdirSync(DATA, { recursive: true, mode: 0o700 });
-  mkdirSync(LIVE, { recursive: true });
+  // Both dirs 0700, every time. These hold the user's graphs — which carry absolute
+  // paths and the structure of private projects — and `mode` on mkdirSync only
+  // applies when the directory is CREATED, so a dir made by an older build (or with
+  // a permissive umask) kept its 0755 forever. chmod is a no-op on Windows.
+  mkdirSync(DATA, { recursive: true, mode: 0o700 });
+  mkdirSync(LIVE, { recursive: true, mode: 0o700 });
+  for (const d of [DATA, LIVE]) {
+    try {
+      chmodSync(d, 0o700);
+    } catch {
+      /* not ours to change, or a filesystem without modes */
+    }
+  }
   if (await up()) {
     console.log(`codeatlas viewer already up at ${URL_}`);
     printPaths();

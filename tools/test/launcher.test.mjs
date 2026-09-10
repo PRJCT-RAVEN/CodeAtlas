@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, cpSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, symlinkSync, cpSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -62,6 +62,12 @@ test("start → status → stop on a free port", { timeout: 120_000 }, async (t)
   assert.match(s.stdout, new RegExp(`codeatlas viewer up at http://localhost:${port}/`));
   assert.ok(existsSync(join(data, "viewer.pid")));
   assert.ok(existsSync(join(data, "live")));
+  // the graphs carry absolute paths and private project structure: both dirs 0700,
+  // and re-applied on every start (mkdirSync's `mode` only bites on creation)
+  if (process.platform !== "win32") {
+    for (const d of [data, join(data, "live")])
+      assert.equal(statSync(d).mode & 0o777, 0o700, `${d} must not be group/world readable`);
+  }
   const r = await fetch(`http://localhost:${port}/live/nothing.json`);
   assert.equal(r.status, 404, "live dir middleware answers");
   const again = run(["start"], env);
