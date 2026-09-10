@@ -223,23 +223,26 @@ describe("Windows editor spawning (2026-09-07)", () => {
 // `attrs.absRoot` comes from the graph, so the fence must stop a crafted one from
 // pointing at the system while still allowing any real project directory.
 
+const FAKE_HOME = "/fake-home/dev-user";      // not a real path: the fence takes `home` as a parameter
+const FAKE_WIN_HOME = "D:\\fake-home\\dev-user";
+
 describe("system-path fence", () => {
   it("names the right prefixes per platform", () => {
-    expect(systemPrefixes("darwin", "/Users/x")).toContain("/System");
-    expect(systemPrefixes("darwin", "/Users/x")).toContain("/Users/x/Library");
+    expect(systemPrefixes("darwin", FAKE_HOME)).toContain("/System");
+    expect(systemPrefixes("darwin", FAKE_HOME)).toContain(`${FAKE_HOME}/Library`);
     expect(systemPrefixes("linux", "/home/x")).toContain("/etc");
     expect(systemPrefixes("linux", "/home/x")).not.toContain("/System");
-    const win = systemPrefixes("win32", "C:\\Users\\x");
+    const win = systemPrefixes("win32", FAKE_WIN_HOME);
     expect(win.some((p) => /Windows$/.test(p))).toBe(true);
     expect(win.some((p) => /Program Files$/.test(p))).toBe(true);
-    expect(win).toContain(join("C:\\Users\\x", "AppData"));
+    expect(win).toContain(join(FAKE_WIN_HOME, "AppData"));
   });
 
   it("refuses system locations and their contents", () => {
-    for (const p of ["/etc", "/etc/passwd", "/usr/bin/env", "/System/Library/x", "/Users/x/Library/Keychains/k"])
-      expect(isSystemPath(p, "darwin", "/Users/x"), p).toBe(true);
-    for (const p of ["/Users/x/dev/app/src/a.ts", "/opt/src/app.ts", "/Volumes/Work/p/a.ts", "/etcetera/a.ts", "/private/var/folders/xy/T/scratch/a.ts"])
-      expect(isSystemPath(p, "darwin", "/Users/x"), p).toBe(false);
+    for (const p of ["/etc", "/etc/passwd", "/usr/bin/env", "/System/Library/x", `${FAKE_HOME}/Library/Keychains/k`])
+      expect(isSystemPath(p, "darwin", FAKE_HOME), p).toBe(true);
+    for (const p of [`${FAKE_HOME}/dev/app/src/a.ts`, "/opt/src/app.ts", "/Volumes/Work/p/a.ts", "/etcetera/a.ts", "/private/var/folders/xy/T/scratch/a.ts"])
+      expect(isSystemPath(p, "darwin", FAKE_HOME), p).toBe(false);
   });
 
   it("refuses a root= that is a system directory, on both flavours", () => {
