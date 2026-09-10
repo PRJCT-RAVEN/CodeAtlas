@@ -269,7 +269,10 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   and Windows; `bin/codeatlas-viewer` and `bin/codeatlas-viewer.cmd` are shims): installs
   `viewer/` + `schema/` deps on first run, starts vite detached on `$CODEATLAS_PORT`
   (5173) with `CODEATLAS_LIVE_DIR=$CODEATLAS_DATA/live` (`~/.codeatlas/live`), pid/log
-  under the data dir; `stop` (verifies the pid is still a vite before killing; `taskkill
+  under the data dir, along with a self-contained `stop-viewer.sh`/`.cmd` that still works
+  after the plugin is uninstalled (the running viewer also exits on its own once the plugin
+  manifest has been gone ~60 s, so a detached daemon cannot outlive its uninstall);
+  `stop` (verifies the pid is still a vite before killing; `taskkill
   /T` on Windows) / `status` (exit 1 when down) / `open` / `paths` / `install`. A dependency
   update that cannot complete keeps the working install and records it, so `start` and
   `status` warn that the viewer is running stale packages until `install` succeeds. Graphs live

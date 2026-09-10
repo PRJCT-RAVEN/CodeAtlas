@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, cpSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -194,4 +195,51 @@ test("a failed dependency update keeps the install that was already working", { 
   rmSync(root, { recursive: true, force: true });
   rmSync(data, { recursive: true, force: true });
   rmSync(cache, { recursive: true, force: true });
+});
+
+/** A throwaway copy of the plugin whose node_modules are symlinked to the real ones. */
+function fakePluginRoot() {
+  const root = mkdtempSync(join(tmpdir(), "codeatlas-uninstall-"));
+  const repo = join(here, "../..");
+  for (const part of ["bin", "viewer", "schema", ".claude-plugin"]) {
+    cpSync(join(repo, part), join(root, part), {
+      recursive: true,
+      filter: (src) => !src.includes("node_modules") && !src.includes("/.git"),
+    });
+  }
+  for (const part of ["viewer", "schema"]) symlinkSync(join(repo, part, "node_modules"), join(root, part, "node_modules"));
+  return root;
+}
+
+// `/plugin uninstall` deletes the plugin — and with it the only tool that could stop
+// the detached viewer, which kept serving :5173 forever with nothing on the machine
+// knowing what it was. Two answers, both tested here: the daemon notices its own
+// plugin is gone and exits, and a stop script in the data dir outlives the plugin.
+test("an uninstalled plugin does not leave the viewer running", { timeout: 180_000 }, async () => {
+  const root = fakePluginRoot();
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-uninstall-data-"));
+  const port = await freePort();
+  const env = { ...process.env, CODEATLAS_DATA: data, CODEATLAS_PORT: String(port), CODEATLAS_UNINSTALL_CHECK_MS: "500" };
+  const started = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "start"], { encoding: "utf8", env });
+  assert.equal(started.status, 0, started.stderr);
+  const pid = Number(readFileSync(join(data, "viewer.pid"), "utf8").trim());
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.ok(alive(), "the viewer should be running");
+
+  // the stop script must exist and be self-contained, since the launcher is about to go
+  const stop = join(data, process.platform === "win32" ? "stop-viewer.cmd" : "stop-viewer.sh");
+  assert.ok(existsSync(stop), "a stop script must be written where it survives uninstall");
+
+  // Hold a connection open, as a forgotten browser tab does — that is WHY the daemon
+  // is still around, and `server.close()` waits for exactly this. Without the grace
+  // timeout the viewer would hang here instead of exiting.
+  const held = await fetch(`http://localhost:${port}/`, { headers: { connection: "keep-alive" } });
+  await held.text();
+
+  rmSync(join(root, ".claude-plugin"), { recursive: true, force: true }); // what uninstall does
+  for (let i = 0; i < 60 && alive(); i++) await sleep(500);
+  assert.ok(!alive(), "the viewer must shut itself down once its plugin is gone");
+
+  rmSync(root, { recursive: true, force: true });
+  rmSync(data, { recursive: true, force: true });
 });

@@ -2,7 +2,7 @@ import { defineConfig, type Plugin, type Connect } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFile, readFile, stat, truncate } from "node:fs/promises";
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -546,6 +546,46 @@ const guardViteOpenInEditor = (): Plugin => ({
   },
 });
 
+/**
+ * Exit when the plugin that started us is uninstalled.
+ *
+ * The viewer is spawned detached, so `/plugin uninstall` removed the plugin — and
+ * with it the only tool that could stop the daemon — while vite kept serving :5173
+ * forever. Nothing on the machine knew what that process was any more.
+ *
+ * Watch for the plugin manifest and exit once it has been gone for a while. The
+ * grace period matters: a plugin UPDATE can briefly replace the directory, and
+ * killing the viewer mid-update would be its own bug.
+ */
+const UNINSTALL_CHECK_MS = Number(process.env.CODEATLAS_UNINSTALL_CHECK_MS) || 20_000; // overridable so the test does not take a minute
+const UNINSTALL_STRIKES = 3; // ~60 s gone before we believe it
+const uninstallWatchdog = (marker: string): Plugin => ({
+  name: "codeatlas-uninstall-watchdog",
+  configureServer(server) {
+    let missing = 0;
+    const timer = setInterval(() => {
+      if (existsSync(marker)) {
+        missing = 0;
+        return;
+      }
+      if (++missing < UNINSTALL_STRIKES) return;
+      clearInterval(timer);
+      server.config.logger.warn(
+        `[codeatlas] the plugin at ${dirname(dirname(marker))} is gone (checked ${UNINSTALL_STRIKES} times over ` +
+          `${Math.round((UNINSTALL_CHECK_MS * UNINSTALL_STRIKES) / 1000)}s) — shutting the viewer down so it does not outlive its uninstall`
+      );
+      // `server.close()` waits for open connections, and an orphaned viewer almost
+      // always HAS one — a forgotten browser tab holding the HMR socket is exactly
+      // why it is still running. Give the graceful close a moment, then go anyway.
+      const bye = () => process.exit(0);
+      setTimeout(bye, 3000);
+      server.close().then(bye, bye);
+    }, UNINSTALL_CHECK_MS);
+    // deliberately NOT unref'd: this timer is the only thing that stops an orphaned
+    // daemon, and it must run for as long as the server does
+  },
+});
+
 const liveDir = process.env.CODEATLAS_LIVE_DIR ? resolve(process.env.CODEATLAS_LIVE_DIR) : null;
 const themeCss = process.env.CODEATLAS_THEME_CSS ? resolve(process.env.CODEATLAS_THEME_CSS) : null;
 const logFile = process.env.CODEATLAS_LOG ? resolve(process.env.CODEATLAS_LOG) : null;
@@ -557,6 +597,9 @@ export default defineConfig({
     openInEditor(),
     userTheme(themeCss),
     ...(liveDir ? [liveDirServer(liveDir)] : []),
+    // only for a launcher-started daemon: a hand-run `npm run dev` is the developer's
+    // to manage, and they can see it in their own terminal
+    ...(liveDir ? [uninstallWatchdog(resolve(viewerDir, "..", ".claude-plugin", "plugin.json"))] : []),
     ...(logFile ? [logRotator(logFile)] : []),
   ],
 });

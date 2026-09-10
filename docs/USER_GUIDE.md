@@ -281,6 +281,7 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 | Symptom | Fix |
 |---|---|
 | `Node.js >= 20 required` | install a current Node; the launcher needs ≥ 20 |
+| the viewer is still running after I uninstalled the plugin | it stops itself within about a minute of the plugin disappearing. To stop it now, run the `STOP=` script `codeatlas-viewer paths` printed (it lives in `~/.codeatlas/` and keeps working after the plugin is gone) |
 | `WARNING — … dependencies are STALE` | an update could not be applied (no network, or a cold npm cache), so the previous install was kept and the viewer is running older packages than the plugin expects. It still starts; `status` keeps warning until you re-run `codeatlas-viewer install` with the network available |
 | Port already in use | `CODEATLAS_PORT=<other> bin/codeatlas-viewer start` |
 | Viewer says "waiting for live/graph.json…" | nothing published yet — ask Claude a question, or write a graph into `LIVE_DIR` (`bin/codeatlas-viewer paths`) |

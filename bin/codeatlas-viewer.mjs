@@ -235,6 +235,42 @@ function warnStaleDeps() {
   console.error("codeatlas-viewer:   Re-run `codeatlas-viewer install` once the network (or npm cache) is available.");
 }
 
+/**
+ * Drop a self-contained stop script next to the pidfile.
+ *
+ * `/plugin uninstall` deletes this launcher, so without it a detached viewer had
+ * nothing left on the machine that could stop it. The running viewer also shuts
+ * itself down once the plugin has been gone a minute (see the watchdog in
+ * viewer/vite.config.ts); this is the immediate, manual way.
+ */
+function writeStopScript() {
+  try {
+    const sh = join(DATA, "stop-viewer.sh");
+    writeFileSync(
+      sh,
+      `#!/bin/sh\n` +
+        `# Stops the CodeAtlas viewer this launcher started. Self-contained on purpose:\n` +
+        `# it keeps working after the plugin is uninstalled.\n` +
+        `pid=$(cat "${PIDFILE}" 2>/dev/null) || { echo "no pidfile at ${PIDFILE}"; exit 1; }\n` +
+        `kill "$pid" 2>/dev/null && sleep 1\n` +
+        `kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null\n` +
+        `rm -f "${PIDFILE}"\n` +
+        `echo "stopped codeatlas viewer (pid $pid)"\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      join(DATA, "stop-viewer.cmd"),
+      `@echo off\r\n` +
+        `rem Stops the CodeAtlas viewer this launcher started. Works after uninstall.\r\n` +
+        `set /p PID=<"${PIDFILE}"\r\n` +
+        `taskkill /PID %PID% /T /F\r\n` +
+        `del "${PIDFILE}"\r\n`
+    );
+  } catch {
+    /* best effort: the watchdog still stops an orphan on its own */
+  }
+}
+
 function printPaths() {
   console.log(`PLUGIN_ROOT=${ROOT}`);
   console.log(`LIVE_DIR=${LIVE}`);
@@ -242,6 +278,7 @@ function printPaths() {
   console.log(`THEME_CSS=${join(DATA, "theme.css")}`);
   console.log(`URL=${URL_}`);
   console.log(`LOG=${LOG}`);
+  console.log(`STOP=${join(DATA, WIN ? "stop-viewer.cmd" : "stop-viewer.sh")}`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -272,6 +309,7 @@ async function start() {
     windowsHide: true,
   });
   writeFileSync(PIDFILE, `${child.pid}\n`);
+  writeStopScript();
   child.unref();
   for (let i = 0; i < 40; i++) {
     if (await up()) {

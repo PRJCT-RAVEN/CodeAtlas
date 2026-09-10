@@ -28,3 +28,7 @@ forces one for a screenshot. If the user wants different colours, copy
 `"${CLAUDE_PLUGIN_ROOT}/docs/theme.example.css"` to `<CODEATLAS_DATA>/theme.css` (the
 `THEME_CSS` path `... paths` prints) and edit only
 the tokens they name — it is loaded after the built-in tokens and survives plugin updates.
+
+If the user uninstalls the plugin, the viewer stops itself within about a minute; the
+`STOP=` script in their data dir (`paths` prints it) stops it immediately and keeps
+working after the plugin is gone.
