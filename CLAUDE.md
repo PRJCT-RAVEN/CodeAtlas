@@ -192,7 +192,8 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   Flow skips their DOM. Measured (headless): a toggle in a routed 302-table view 1,003 ms →
   198 ms; dense views already relay out in ~350 ms, so they stay on the full path.
   `?incremental=0|1` forces the path for benchmarking.
-- Database kinds have fixed hue slots (`database|schema|table|column|index|trigger|procedure`).
+- Database kinds have fixed hue slots (`database|schema|table|column|index|trigger|procedure`,
+  plus `group` for schema2ir's name-range buckets).
 - **Platforms**: everything shipped is Node ≥ 20 and portable across macOS, Linux and
   Windows; `CODEATLAS_ROOTS` uses the platform path-list delimiter; "Open in editor" has
   per-platform defaults. CI runs the viewer, tools and schema suites on a
@@ -206,7 +207,10 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   elevation, FIFO tests skip, the unreadable-dir test uses `icacls`.
 - **Authoring big graphs without Claude**: `tools/schema2ir.mjs` (database catalog →
   IR; SQLite via the `sqlite3` CLI, PostgreSQL/MySQL via `docs/schema-import/*.sql` →
-  JSON; 10,000 tables in ~2 s) and `tools/fs2ir.mjs` (`--max-nodes` to raise the 3,000
+  JSON; 10,000 tables in ~2 s; tables always sit under a `schema` container, and a schema
+  with more than 200 of them is split into `group` name-ranges so the budget can collapse
+  each level — a flat level under the root cannot be collapsed, since the root is the
+  canvas) and `tools/fs2ir.mjs` (`--max-nodes` to raise the 3,000
   default). Claude-authored views stay < 100 nodes.
 
 ## Headless screenshot loop (Claude's eyes on the viewer)

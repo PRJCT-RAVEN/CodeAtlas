@@ -27,39 +27,45 @@
 // with schema/validate.mjs. The viewer's visibility budget does the rest.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const USAGE = "usage: schema2ir.mjs (--sqlite <file> | --json <file|->) [-o out.json] [--name <root name>] [--no-indexes]";
-const argv = process.argv.slice(2);
-let sqlite = null;
-let jsonPath = null;
-let out = null;
-let name = null;
-let indexes = true;
-for (let i = 0; i < argv.length; i++) {
-  const a = argv[i];
-  if (a === "--sqlite") sqlite = argv[++i];
-  else if (a === "--json") jsonPath = argv[++i];
-  else if (a === "-o") out = argv[++i];
-  else if (a === "--name") name = argv[++i];
-  else if (a === "--no-indexes") indexes = false;
-  else if (a === "-h" || a === "--help") {
-    console.log(USAGE);
-    process.exit(0);
-  } else {
-    console.error(`unknown argument: ${a}\n${USAGE}`);
+/** Parse argv. Only called from the CLI block at the bottom: importing this module
+ *  must not read process.argv, print usage, or exit. */
+function parseArgs(argv) {
+  let sqlite = null;
+  let jsonPath = null;
+  let out = null;
+  let name = null;
+  let indexes = true;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--sqlite") sqlite = argv[++i];
+    else if (a === "--json") jsonPath = argv[++i];
+    else if (a === "-o") out = argv[++i];
+    else if (a === "--name") name = argv[++i];
+    else if (a === "--no-indexes") indexes = false;
+    else if (a === "-h" || a === "--help") {
+      console.log(USAGE);
+      process.exit(0);
+    } else {
+      console.error(`unknown argument: ${a}\n${USAGE}`);
+      process.exit(2);
+    }
+  }
+  if ((sqlite === null) === (jsonPath === null)) {
+    console.error(USAGE);
     process.exit(2);
   }
-}
-if ((sqlite === null) === (jsonPath === null)) {
-  console.error(USAGE);
-  process.exit(2);
+
+  // --- catalog sources ---------------------------------------------------------
+
+  /** Run one `sqlite3 -json` query; rows as objects. The path is made absolute so a name starting with `-` can never be read as an option. */
+  return { sqlite, jsonPath, out, name, indexes };
 }
 
-// --- catalog sources ---------------------------------------------------------
-
-/** Run one `sqlite3 -json` query; rows as objects. The path is made absolute so a name starting with `-` can never be read as an option. */
 function sq(file, sql) {
   const r = spawnSync("sqlite3", ["-json", "-readonly", resolve(file), sql], { encoding: "utf8", maxBuffer: 1 << 30 });
   if (r.error) {
@@ -73,7 +79,7 @@ function sq(file, sql) {
   return r.stdout.trim() ? JSON.parse(r.stdout) : [];
 }
 
-export function catalogFromSqlite(file) {
+export function catalogFromSqlite(file, { indexes = true } = {}) {
   const tables = sq(file, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
   const cols = sq(file, "SELECT m.name AS tbl, p.name, p.type, p.\"notnull\" AS not_null, p.dflt_value AS dflt, p.pk FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%' ORDER BY m.name, p.cid");
   const fks = sq(file, "SELECT m.name AS tbl, f.id, f.seq, f.\"table\" AS ref, f.\"from\" AS col, f.\"to\" AS refcol FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type='table' AND m.name NOT LIKE 'sqlite_%' ORDER BY m.name, f.id, f.seq");
@@ -98,7 +104,12 @@ export function catalogFromSqlite(file) {
     if (i.col) idxGroups.get(key).columns.push(i.col);
   }
   for (const g of idxGroups.values()) byTable.get(g.tbl)?.indexes.push({ name: g.name, unique: g.unique, columns: g.columns });
-  return { name: basename(file).replace(/\.(db|sqlite3?|db3)$/i, ""), dialect: "sqlite", tables: [...byTable.values()] };
+  return {
+    name: basename(file).replace(/\.(db|sqlite3?|db3)$/i, ""),
+    dialect: "sqlite",
+    defaultSchema: "main", // SQLite's schema for everything not ATTACHed
+    tables: [...byTable.values()],
+  };
 }
 
 // --- IR ------------------------------------------------------------------------
@@ -124,6 +135,8 @@ export function catalogToIR(cat, opts = {}) {
   const tables = cat.tables ?? [];
   const hasSchemas = tables.some((t) => t.schema);
   const schemaIds = new Map();
+  const groupParent = new Map(); // table id -> bucket id, when a level had to be bucketed
+  let groupCount = 0;
   const tableId = (t) => (t.schema ? `table:${seg(t.schema)}.${seg(t.name)}` : `table:${seg(t.name)}`);
   const columnId = (t, c) => `column:${tableId(t).slice(6)}.${seg(c)}`;
   // keyed by the ESCAPED id, so {name:"a.b"} and {schema:"a",name:"b"} never collide
@@ -146,19 +159,50 @@ export function catalogToIR(cat, opts = {}) {
     return [...byName.values()];
   };
 
+  // Every table hangs under a SCHEMA container, even when the catalog has none.
+  // The root node IS the viewer's canvas, so tables parented straight to it sit at
+  // the top display level, where the visibility budget has nothing left to collapse:
+  // a 2,000-table import opened with 2,000 visible nodes (measured 2026-09-10).
+  const schemaOf = (t) => (hasSchemas ? t.schema ?? "" : cat.defaultSchema ?? "(default)");
   for (const t of tables) {
-    let parent = rootId;
-    if (hasSchemas) {
-      const s = t.schema ?? "";
-      if (!schemaIds.has(s)) {
-        const sid = `schema:${seg(s || "(none)")}`;
-        schemaIds.set(s, sid);
-        nodes.push({ id: sid, kind: "schema", name: s || "(no schema)", parent: rootId });
-        contains(rootId, sid);
-      }
-      parent = schemaIds.get(s);
+    const s = schemaOf(t);
+    if (!schemaIds.has(s)) {
+      const sid = `schema:${seg(s || "(none)")}`;
+      schemaIds.set(s, sid);
+      nodes.push({ id: sid, kind: "schema", name: hasSchemas ? s || "(no schema)" : s, parent: rootId });
+      contains(rootId, sid);
     }
+  }
+
+  // A schema holding more tables than the viewer shows at once gets an explicit
+  // bucket level, so every level stays browsable instead of dumping thousands of
+  // siblings: ~sqrt(k) buckets of ~sqrt(k), the shape the viewer already uses for
+  // wide containers. Buckets are an IMPORT ARTIFACT, not database structure — they
+  // are named for the range they hold and the description says how many there are.
+  const BUCKET_ABOVE = 200;
+  for (const [s, sid] of schemaIds) {
+    const mine = tables.filter((t) => schemaOf(t) === s).sort((a, b) => byteCmp(a.name, b.name));
+    if (mine.length <= BUCKET_ABOVE) continue;
+    const per = Math.ceil(Math.sqrt(mine.length));
+    for (let i = 0; i < mine.length; i += per) {
+      const slice = mine.slice(i, i + per);
+      const gid = `group:${seg(s || "(none)")}.${String(i / per).padStart(4, "0")}`;
+      nodes.push({
+        id: gid,
+        kind: "group",
+        name: slice.length > 1 ? `${slice[0].name} … ${slice[slice.length - 1].name}` : slice[0].name,
+        parent: sid,
+        metrics: { tables: slice.length },
+      });
+      contains(sid, gid);
+      groupCount++;
+      for (const t of slice) groupParent.set(tableId(t), gid);
+    }
+  }
+
+  for (const t of tables) {
     const tid = tableId(t);
+    const parent = groupParent.get(tid) ?? schemaIds.get(schemaOf(t));
     const cols = t.columns ?? [];
     const fkCount = (t.foreignKeys ?? []).length;
     const node = { id: tid, kind: "table", name: t.name, parent, metrics: { columns: cols.length, foreignKeys: fkCount } };
@@ -235,6 +279,7 @@ export function catalogToIR(cat, opts = {}) {
     description:
       `${tables.length} tables, ${columns} columns, ${refCount.size} foreign-key links` +
       (hasSchemas ? ` across ${schemaIds.size} schemas` : "") +
+      (groupCount ? `; tables grouped into ${groupCount} name ranges so each level stays browsable` : "") +
       (skipped ? `; ${skipped} foreign-key column(s) skipped (target not in catalog)` : "") +
       (cat.dialect ? ` (${cat.dialect})` : ""),
     root: rootId,
@@ -244,12 +289,50 @@ export function catalogToIR(cat, opts = {}) {
   };
 }
 
-// --- main ----------------------------------------------------------------------
+// --- CLI ------------------------------------------------------------------------
 
-const catalog = sqlite !== null ? catalogFromSqlite(sqlite) : JSON.parse(jsonPath === "-" ? readFileSync(0, "utf8") : readFileSync(jsonPath, "utf8"));
-const ir = catalogToIR(catalog, { name, indexes });
-const text = JSON.stringify(ir, null, 2) + "\n";
-if (out) {
-  writeFileSync(out, text);
-  console.error(`schema2ir: wrote ${out} (${ir.nodes.length} nodes, ${ir.edges.length} edges)`);
-} else process.stdout.write(text);
+/** True only when this file is the program being run, not an import. Realpaths both
+ *  sides: Node resolves symlinks building import.meta.url, path.resolve does not. */
+function isMain() {
+  try {
+    return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+/** Validate our own output. This graph is often published straight over the live
+ *  graph, so an invalid one would surface as the viewer's problem, several steps
+ *  from the cause — and the exit code used to say 0 either way. */
+async function selfCheck(ir) {
+  let validateDocument;
+  try {
+    ({ validateDocument } = await import(resolve(dirname(fileURLToPath(import.meta.url)), "../schema/validate.mjs")));
+  } catch (e) {
+    // the validator needs `npm ci` in schema/; do not imply we checked when we did not
+    console.error(`schema2ir: could not self-check the output (${e?.message ?? e}); run \`node schema/validate.mjs\` yourself`);
+    return true;
+  }
+  const errors = validateDocument(ir);
+  if (!errors.length) return true;
+  console.error(`schema2ir: BUG — the graph this build produced is not valid IR (${errors.length} problem(s)):`);
+  for (const e of errors.slice(0, 10)) console.error(`  - ${e}`);
+  if (errors.length > 10) console.error(`  … and ${errors.length - 10} more`);
+  console.error("schema2ir: refusing to write it; please report this with the catalog that caused it");
+  return false;
+}
+
+if (isMain()) {
+  const { sqlite, jsonPath, out, name, indexes } = parseArgs(process.argv.slice(2));
+  const catalog =
+    sqlite !== null
+      ? catalogFromSqlite(sqlite, { indexes })
+      : JSON.parse(jsonPath === "-" ? readFileSync(0, "utf8") : readFileSync(jsonPath, "utf8"));
+  const ir = catalogToIR(catalog, { name, indexes });
+  if (!(await selfCheck(ir))) process.exit(1);
+  const text = JSON.stringify(ir, null, 2) + "\n";
+  if (out) {
+    writeFileSync(out, text);
+    console.error(`schema2ir: wrote ${out} (${ir.nodes.length} nodes, ${ir.edges.length} edges, validated)`);
+  } else process.stdout.write(text);
+}

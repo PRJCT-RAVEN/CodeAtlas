@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { catalogToIR } from "../schema2ir.mjs";
+import { validateDocument as validateIR } from "../../schema/validate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, "../schema2ir.mjs");
@@ -67,7 +70,14 @@ test("SQLite database → IR through the sqlite3 CLI (validates; FK to a primary
   assert.match(valid(out), /VALID/);
   const ir = JSON.parse(readFileSync(out, "utf8"));
   assert.equal(ir.root, "db:app");
-  assert.ok(!ir.nodes.some((n) => n.kind === "schema"), "SQLite has no schemas: tables hang under the root");
+  // SQLite's schema is literally "main", and tables must NOT hang off the root: the
+  // root is the viewer's canvas, so a top-level table cannot be collapsed by the
+  // visibility budget (a 2,000-table import opened with 2,000 visible nodes).
+  const schema = ir.nodes.find((n) => n.kind === "schema");
+  assert.equal(schema?.id, "schema:main");
+  assert.equal(schema.parent, ir.root);
+  assert.ok(ir.nodes.filter((n) => n.kind === "table").every((t) => t.parent === "schema:main"));
+  assert.ok(!ir.nodes.some((n) => n.parent === ir.root && n.kind === "table"), "no table directly under the root");
   const refs = ir.edges.filter((e) => e.kind === "references").map((e) => e.id).sort();
   assert.deepEqual(refs, ["e:references:column:posts.author_id->column:users.id", "e:references:column:tags.post_id->column:posts.id"]);
   const email = ir.nodes.find((n) => n.id === "column:users.email");
@@ -141,5 +151,47 @@ test("MySQL-shaped catalogs: per-column index entries merge, dotted names never 
     "e:references:column:a.child.p2->column:a.parent.k2",
   ]);
   assert.equal(ir.nodes.find((n) => n.id === "column:a.c.ref").attrs.nullable, false, "\"NO\" is a boolean too");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- big imports stay browsable (2026-09-10) ------------------------------------
+
+test("a schema with more tables than the viewer shows is split into name-range groups", () => {
+  const tables = Array.from({ length: 500 }, (_, i) => ({
+    name: `t${String(i).padStart(3, "0")}`,
+    columns: [{ name: "id", primaryKey: true }],
+  }));
+  const ir = catalogToIR({ name: "big", dialect: "sqlite", defaultSchema: "main", tables });
+  const groups = ir.nodes.filter((n) => n.kind === "group");
+  assert.ok(groups.length > 1 && groups.length < 60, `expected ~sqrt(500) groups, got ${groups.length}`);
+  assert.ok(groups.every((g) => g.parent === "schema:main"));
+  // every table is in exactly one group, and no table is left on the schema
+  const inGroup = ir.nodes.filter((n) => n.kind === "table" && groups.some((g) => g.id === n.parent));
+  assert.equal(inGroup.length, 500);
+  // the group name says what it holds, and the description admits the grouping
+  assert.match(groups[0].name, / … /);
+  assert.match(ir.description, /grouped into \d+ name ranges/);
+  assert.deepEqual(validateIR(ir), []);
+});
+
+test("a small database is untouched: no groups, tables straight under the schema", () => {
+  const tables = Array.from({ length: 12 }, (_, i) => ({ name: `t${i}`, columns: [{ name: "id" }] }));
+  const ir = catalogToIR({ name: "small", dialect: "sqlite", defaultSchema: "main", tables });
+  assert.equal(ir.nodes.filter((n) => n.kind === "group").length, 0);
+  assert.ok(ir.nodes.filter((n) => n.kind === "table").every((t) => t.parent === "schema:main"));
+  assert.doesNotMatch(ir.description, /name ranges/);
+});
+
+test("a catalog that would produce invalid IR is refused, not written", () => {
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-invalid-"));
+  const cat = join(dir, "dup.json");
+  const outPath = join(dir, "out.json");
+  // two tables with the same name -> duplicate node ids
+  writeFileSync(cat, JSON.stringify({ name: "dup", tables: [{ name: "a", columns: [{ name: "x" }] }, { name: "a", columns: [{ name: "x" }] }] }));
+  const r = spawnSync("node", [TOOL, "--json", cat, "-o", outPath], { encoding: "utf8" });
+  assert.equal(r.status, 1, "must exit non-zero");
+  assert.match(r.stderr, /not valid IR/);
+  assert.match(r.stderr, /duplicate node id/);
+  assert.ok(!existsSync(outPath), "must not write the invalid graph");
   rmSync(dir, { recursive: true, force: true });
 });

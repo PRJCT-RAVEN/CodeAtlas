@@ -65,3 +65,21 @@ silently. `--no-indexes` leaves index nodes out; `--name` sets the root name.
 `schema/validate.mjs` and opens in the viewer under its budget (see CLAUDE.md, "Big
 graphs"). Column-level detail for a whole database is not something to look at in one
 view; it is there so that any table can be expanded and any column found.
+
+## Shape of the result
+
+`db:<name>` (the canvas) > `schema:<s>` > `table:<s.t>` > `column:` / `index:` leaves.
+
+Catalogs without schemas still get one container — SQLite's is its real default schema,
+`main`. This matters: the root node *is* the viewer's canvas, so tables parented straight
+to it would sit at the top display level where the visibility budget has nothing to
+collapse, and a 2,000-table import opened with 2,000 visible nodes.
+
+A schema holding more than 200 tables is split into `group:` containers of roughly
+√n tables each, named for the range they hold (`orders … products`). These groups are an
+**import artifact, not database structure** — the description says how many were created.
+They keep every level browsable: a 2,000-table import opens as 1 schema + 45 groups
+(46 visible nodes) instead of 2,000, and expanding a group shows ~45 tables.
+
+The importer validates its own output before writing and exits non-zero if it is ever
+invalid, since the result is usually published straight over the live graph.

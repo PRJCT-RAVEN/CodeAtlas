@@ -356,10 +356,16 @@
       }
     },
     {
+      "id": "schema:main",
+      "kind": "schema",
+      "name": "main",
+      "parent": "db:shop"
+    },
+    {
       "id": "table:addresses",
       "kind": "table",
       "name": "addresses",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 5,
         "foreignKeys": 1
@@ -369,7 +375,7 @@
       "id": "table:categories",
       "kind": "table",
       "name": "categories",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 2,
         "foreignKeys": 0
@@ -379,7 +385,7 @@
       "id": "table:order_items",
       "kind": "table",
       "name": "order_items",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 3,
         "foreignKeys": 2
@@ -389,7 +395,7 @@
       "id": "table:orders",
       "kind": "table",
       "name": "orders",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 5,
         "foreignKeys": 2
@@ -399,7 +405,7 @@
       "id": "table:payments",
       "kind": "table",
       "name": "payments",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 4,
         "foreignKeys": 1
@@ -409,7 +415,7 @@
       "id": "table:products",
       "kind": "table",
       "name": "products",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 5,
         "foreignKeys": 1
@@ -419,7 +425,7 @@
       "id": "table:users",
       "kind": "table",
       "name": "users",
-      "parent": "db:shop",
+      "parent": "schema:main",
       "metrics": {
         "columns": 3,
         "foreignKeys": 0
@@ -428,45 +434,51 @@
   ],
   "edges": [
     {
-      "id": "e:contains:db:shop->table:addresses",
+      "id": "e:contains:db:shop->schema:main",
       "kind": "contains",
       "from": "db:shop",
+      "to": "schema:main"
+    },
+    {
+      "id": "e:contains:schema:main->table:addresses",
+      "kind": "contains",
+      "from": "schema:main",
       "to": "table:addresses"
     },
     {
-      "id": "e:contains:db:shop->table:categories",
+      "id": "e:contains:schema:main->table:categories",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:categories"
     },
     {
-      "id": "e:contains:db:shop->table:order_items",
+      "id": "e:contains:schema:main->table:order_items",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:order_items"
     },
     {
-      "id": "e:contains:db:shop->table:orders",
+      "id": "e:contains:schema:main->table:orders",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:orders"
     },
     {
-      "id": "e:contains:db:shop->table:payments",
+      "id": "e:contains:schema:main->table:payments",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:payments"
     },
     {
-      "id": "e:contains:db:shop->table:products",
+      "id": "e:contains:schema:main->table:products",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:products"
     },
     {
-      "id": "e:contains:db:shop->table:users",
+      "id": "e:contains:schema:main->table:users",
       "kind": "contains",
-      "from": "db:shop",
+      "from": "schema:main",
       "to": "table:users"
     },
     {

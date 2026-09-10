@@ -34,6 +34,7 @@ const KIND_SLOT: Record<string, number> = {
   package: 5,
   database: 3,
   schema: 5,
+  group: 5, // schema2ir's name-range buckets: same slot as the schema they sit in
   table: 3,
   column: 4,
   index: 3,

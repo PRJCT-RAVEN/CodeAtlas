@@ -121,7 +121,7 @@ node schema\validate.mjs $env:TEMP\shop.json
 node tools\irdiff.mjs $env:KIT\sample-db\shop.expected.json $env:TEMP\shop.json
 ```
 
-Expected: VALID, with 41 nodes, 47 edges and root `db:shop`; the irdiff should be EMPTY. The
+Expected: VALID, with 42 nodes, 48 edges and root `db:shop`; the irdiff should be EMPTY. The
 expected file was generated from this exact DB on macOS, so any diff is a portability finding.
 Publish the result with `copy $env:TEMP\shop.json $env:USERPROFILE\.codeatlas\live\graph.json` and
 check that FK edges render between tables.
