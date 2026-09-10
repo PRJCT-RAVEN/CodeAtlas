@@ -38,6 +38,7 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 const LIVE = join(DATA, "live");
 const LOG = join(DATA, "viewer.log");
 const PIDFILE = join(DATA, "viewer.pid");
+const STALE_DEPS = join(DATA, "deps-stale.json"); // set when an update failed and the old install was kept
 const URL_ = `http://localhost:${PORT}/`;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const VITE = join(ROOT, "viewer", "node_modules", "vite", "bin", "vite.js");
@@ -149,6 +150,9 @@ function pidAlive() {
   return isOurVite(cmd) ? { pid, verified: true } : null;
 }
 
+/** Labels whose dependency update failed in this run (the old install was kept). */
+const staleDeps = [];
+
 function installDeps() {
   needNode();
   const run = (cwd, label, extra = []) => {
@@ -179,12 +183,20 @@ function installDeps() {
       if (saved) rmSync(bak, { recursive: true, force: true });
       return;
     }
+    console.error(`codeatlas-viewer: could not update ${label} dependencies (npm ci exited ${r.status}) — keeping the working install already on disk.`);
     if (!saved) die(`npm ci failed in ${cwd}`); // nothing to fall back to
     rmSync(nm, { recursive: true, force: true }); // whatever the failed run left
     renameSync(bak, nm);
-    // A slightly stale viewer beats no viewer: keep going rather than exiting.
-    console.error(`codeatlas-viewer: could not update ${label} dependencies (npm ci exited ${r.status}) — keeping the working install already on disk.`);
-    console.error(`codeatlas-viewer: the viewer may be running against slightly stale ${label} packages; re-run \`codeatlas-viewer install\` when the network is back.`);
+    // A slightly stale viewer beats no viewer: keep going rather than exiting. But the
+    // user MUST be told — otherwise they are silently running old code, and a `start`
+    // from days ago is long out of the scrollback. Record it so `status` keeps saying so.
+    staleDeps.push(label);
+    try {
+      mkdirSync(DATA, { recursive: true });
+      writeFileSync(STALE_DEPS, JSON.stringify({ at: new Date().toISOString(), failed: staleDeps, exitCode: r.status }, null, 2) + "\n");
+    } catch {
+      /* the warning below is still printed */
+    }
   };
   const newer = (a, b) => existsSync(a) && (!existsSync(b) || statSync(a).mtimeMs > statSync(b).mtimeMs);
   const viewer = join(ROOT, "viewer");
@@ -192,6 +204,35 @@ function installDeps() {
   const schema = join(ROOT, "schema");
   if (!existsSync(join(schema, "node_modules", "ajv")) || newer(join(schema, "package-lock.json"), join(schema, "node_modules", ".package-lock.json")))
     run(schema, "validator", ["--omit=dev"]);
+  if (staleDeps.length === 0) {
+    try {
+      unlinkSync(STALE_DEPS); // everything is current again
+    } catch {
+      /* no marker */
+    }
+  }
+}
+
+/** The recorded "an update failed" state, or null. */
+function staleDepsRecord() {
+  try {
+    const r = JSON.parse(readFileSync(STALE_DEPS, "utf8"));
+    return Array.isArray(r.failed) && r.failed.length ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Print the stale-dependency warning, if any. Called last so it is what the user sees. */
+function warnStaleDeps() {
+  const r = staleDepsRecord();
+  if (!r) return;
+  const when = String(r.at).replace("T", " ").replace(/\..*/, "");
+  console.error("");
+  console.error(`codeatlas-viewer: WARNING — ${r.failed.join(" and ")} dependencies are STALE.`);
+  console.error(`codeatlas-viewer:   an update failed on ${when} (npm ci exited ${r.exitCode}) and the previous`);
+  console.error("codeatlas-viewer:   install was kept, so the viewer is running older packages than the plugin expects.");
+  console.error("codeatlas-viewer:   Re-run `codeatlas-viewer install` once the network (or npm cache) is available.");
 }
 
 function printPaths() {
@@ -211,6 +252,7 @@ async function start() {
   if (await up()) {
     console.log(`codeatlas viewer already up at ${URL_}`);
     printPaths();
+    warnStaleDeps();
     return;
   }
   if (await portHeld()) die(`port :${PORT} is held by another process that is not the viewer. Free it or set CODEATLAS_PORT.`);
@@ -235,6 +277,7 @@ async function start() {
     if (await up()) {
       console.log(`codeatlas viewer up at ${URL_}`);
       printPaths();
+      warnStaleDeps();
       return;
     }
     if (!alive(child.pid)) break;
@@ -316,6 +359,7 @@ async function status() {
   else if (await portHeld()) console.log(`down (port :${PORT} is held by something that is not the viewer)`);
   else console.log("down");
   printPaths();
+  warnStaleDeps();
   if (!isUp) process.exit(1);
 }
 
@@ -361,6 +405,10 @@ if (isMain) switch (cmd) {
     break;
   case "install":
     installDeps();
+    if (staleDeps.length) {
+      warnStaleDeps();
+      process.exit(1); // an explicit `install` that could not update IS a failure
+    }
     console.log("dependencies installed");
     break;
   case "-h":

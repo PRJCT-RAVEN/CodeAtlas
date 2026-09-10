@@ -12,6 +12,12 @@ report the result in one or two lines: URL, whether it was already up, and the L
 where graphs go. On failure, show the log lines the script printed and suggest the fix it
 names (Node.js >= 20 missing, port :5173 held → set `CODEATLAS_PORT`).
 
+**Always relay a `WARNING — … dependencies are STALE` line to the user**, even though the
+command still exits 0 and the viewer starts. It means an update could not be applied (no
+network, or a cold npm cache) and the previous install was kept, so the viewer is running
+older packages than the plugin expects. Tell them to re-run `... install` when they are
+back online. `status` repeats the warning until an update succeeds.
+
 Environment the launcher honours: `CODEATLAS_DATA` (default `~/.codeatlas`),
 `CODEATLAS_PORT` (default 5173), `CODEATLAS_EDITOR` (e.g. `code -g {file}:{line}`),
 `CODEATLAS_OPEN_HOME=1` (open any file under `$HOME`, not only the roots the graph names;

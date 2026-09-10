@@ -176,6 +176,21 @@ test("a failed dependency update keeps the install that was already working", { 
     assert.ok(!existsSync(join(root, part, "node_modules.codeatlas-bak")), `${part}: backup left behind`);
   }
   assert.match(r.stderr, /keeping the working install/);
+  // an explicit `install` that could not update is a FAILURE, and the warning must
+  // name what is stale — not a silent success the user never notices
+  assert.equal(r.status, 1, "`install` must not report success when it could not update");
+  assert.match(r.stderr, /dependencies are STALE/);
+  assert.match(r.stderr, /codeatlas-viewer install/);
+
+  // and it must keep saying so afterwards: a `start` from days ago is long gone
+  // from the scrollback, so the state is recorded in the data dir
+  assert.ok(existsSync(join(data, "deps-stale.json")), "the stale state must be recorded");
+  const later = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "status"], {
+    encoding: "utf8",
+    env: { ...process.env, CODEATLAS_DATA: data, CODEATLAS_PORT: "59999" },
+  });
+  assert.match(later.stderr, /dependencies are STALE/, "`status` must keep reporting stale dependencies");
+
   rmSync(root, { recursive: true, force: true });
   rmSync(data, { recursive: true, force: true });
   rmSync(cache, { recursive: true, force: true });

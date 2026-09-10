@@ -265,7 +265,9 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   `viewer/` + `schema/` deps on first run, starts vite detached on `$CODEATLAS_PORT`
   (5173) with `CODEATLAS_LIVE_DIR=$CODEATLAS_DATA/live` (`~/.codeatlas/live`), pid/log
   under the data dir; `stop` (verifies the pid is still a vite before killing; `taskkill
-  /T` on Windows) / `status` (exit 1 when down) / `open` / `paths` / `install`. Graphs live
+  /T` on Windows) / `status` (exit 1 when down) / `open` / `paths` / `install`. A dependency
+  update that cannot complete keeps the working install and records it, so `start` and
+  `status` warn that the viewer is running stale packages until `install` succeeds. Graphs live
   OUTSIDE the plugin so an update never deletes them. Tested end to end in
   `tools/test/launcher.test.mjs`.
 - Skills must NOT declare `allowed-tools` (verified 2026-09-05, Claude Code 2.1.261): with

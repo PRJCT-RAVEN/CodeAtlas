@@ -279,7 +279,7 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 | Symptom | Fix |
 |---|---|
 | `Node.js >= 20 required` | install a current Node; the launcher needs ≥ 20 |
-| `could not update … dependencies … keeping the working install` | the update needed the network (or a warm npm cache) and could not reach it. The viewer still starts on the dependencies already on disk; re-run `codeatlas-viewer install` when you are back online |
+| `WARNING — … dependencies are STALE` | an update could not be applied (no network, or a cold npm cache), so the previous install was kept and the viewer is running older packages than the plugin expects. It still starts; `status` keeps warning until you re-run `codeatlas-viewer install` with the network available |
 | Port already in use | `CODEATLAS_PORT=<other> bin/codeatlas-viewer start` |
 | Viewer says "waiting for live/graph.json…" | nothing published yet — ask Claude a question, or write a graph into `LIVE_DIR` (`bin/codeatlas-viewer paths`) |
 | Status bar shows a red poll error | the published file is invalid; the last good graph stays on screen. Run `node schema/validate.mjs <file>` and fix what it lists |
