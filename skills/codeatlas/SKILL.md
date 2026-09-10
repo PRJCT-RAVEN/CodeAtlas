@@ -134,7 +134,8 @@ collapsed containers too ("+N hidden").
 Click a node for details (summary, loc, attrs, metrics, "Open in editor"). "Open in editor"
 runs `$CODEATLAS_EDITOR` (`{file}`/`{line}` placeholders, e.g. `code -g {file}:{line}`), else
 Xcode/VS Code/system opener by platform; it only opens regular files under the analyzed
-root(s) — so always set `attrs.absRoot` — or anywhere under `$HOME` with `CODEATLAS_OPEN_HOME=1`.
+root(s) — so always set `attrs.absRoot`; it is honoured on any drive, so a project outside
+`$HOME` works unconfigured, while system locations are always refused.
 If the viewer shows a status-bar error, the last good graph stays on screen — fix the file.
 In big views a collapse/expand is laid out incrementally ("approximate layout · tidy" in
 the status bar); tidy runs a full pass.

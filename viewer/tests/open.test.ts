@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from
 import { platform, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { resolveLocFile, allowedRoots, sameOrigin, hostAllowed, localRequest, editorCommands, liveFilePath, safeForGenericOpen, substituteToken, loopbackPeer, liveEtag, notModified, cmdEscapeArg, cmdEscapeCommand, resolveOnPath, spawnDetached } from "../vite.config";
+import { resolveLocFile, allowedRoots, isSystemPath, systemPrefixes, sameOrigin, hostAllowed, localRequest, editorCommands, liveFilePath, safeForGenericOpen, substituteToken, loopbackPeer, liveEtag, notModified, cmdEscapeArg, cmdEscapeCommand, resolveOnPath, spawnDetached } from "../vite.config";
 
 // a fake $HOME with a repo inside it and a file outside it
 const home = realpathSync(mkdtempSync(join(tmpdir(), "codeatlas-home-")));
@@ -20,6 +20,7 @@ writeFileSync(join(outside, "secret.txt"), "x\n");
 let canSymlink = true;
 try {
   symlinkSync(join(outside, "secret.txt"), join(repo, "Sources", "link.txt"));
+symlinkSync("/etc/hosts", join(repo, "Sources", "etc-link.txt")); // must not inherit the repo's blessing
 } catch (e) {
   if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
   canSymlink = false;
@@ -32,9 +33,11 @@ describe("resolveLocFile", () => {
   it("resolves against root= when it lives under $HOME", () => {
     expect(resolveLocFile("note.md", other, [repo], home)).toBe(join(other, "note.md"));
   });
-  it("ignores a root= outside $HOME", () => {
-    expect(allowedRoots(outside, [repo], home)).toEqual([repo]);
-    expect(resolveLocFile("secret.txt", outside, [repo], home)).toBeNull();
+  it("honours a root= on any drive, not just under $HOME", () => {
+    // the old rule dropped a root outside $HOME, which killed "Open in editor" for
+    // every project on another drive or in /opt
+    expect(allowedRoots(outside, [repo], home)).toEqual([outside, repo]);
+    expect(resolveLocFile("secret.txt", outside, [repo], home)).toBe(join(outside, "secret.txt"));
   });
   it("blocks relative traversal", () => {
     expect(resolveLocFile("../../../../etc/hosts", null, [repo], home)).toBeNull();
@@ -213,5 +216,40 @@ describe("Windows editor spawning (2026-09-07)", () => {
     } finally {
       process.env.PATH = saved;
     }
+  });
+});
+
+// --- the deny-list fence (2026-09-10) -------------------------------------------
+// `attrs.absRoot` comes from the graph, so the fence must stop a crafted one from
+// pointing at the system while still allowing any real project directory.
+
+describe("system-path fence", () => {
+  it("names the right prefixes per platform", () => {
+    expect(systemPrefixes("darwin", "/Users/x")).toContain("/System");
+    expect(systemPrefixes("darwin", "/Users/x")).toContain("/Users/x/Library");
+    expect(systemPrefixes("linux", "/home/x")).toContain("/etc");
+    expect(systemPrefixes("linux", "/home/x")).not.toContain("/System");
+    const win = systemPrefixes("win32", "C:\\Users\\x");
+    expect(win.some((p) => /Windows$/.test(p))).toBe(true);
+    expect(win.some((p) => /Program Files$/.test(p))).toBe(true);
+    expect(win).toContain(join("C:\\Users\\x", "AppData"));
+  });
+
+  it("refuses system locations and their contents", () => {
+    for (const p of ["/etc", "/etc/passwd", "/usr/bin/env", "/System/Library/x", "/Users/x/Library/Keychains/k"])
+      expect(isSystemPath(p, "darwin", "/Users/x"), p).toBe(true);
+    for (const p of ["/Users/x/dev/app/src/a.ts", "/opt/src/app.ts", "/Volumes/Work/p/a.ts", "/etcetera/a.ts", "/private/var/folders/xy/T/scratch/a.ts"])
+      expect(isSystemPath(p, "darwin", "/Users/x"), p).toBe(false);
+  });
+
+  it("refuses a root= that is a system directory, on both flavours", () => {
+    expect(allowedRoots("/etc", [repo], home, "darwin")).toEqual([repo]);
+    expect(allowedRoots("/System", [repo], home, "darwin")).toEqual([repo]);
+  });
+
+  it("refuses a system file even when it sits inside an allowed root", () => {
+    // realpath first, then the deny-list: a symlink in the project pointing at
+    // /etc/hosts must not inherit the project's blessing
+    expect(resolveLocFile("Sources/etc-link.txt", null, [repo], home)).toBeNull();
   });
 });

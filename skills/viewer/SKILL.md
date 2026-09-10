@@ -14,7 +14,8 @@ names (Node.js >= 20 missing, port :5173 held → set `CODEATLAS_PORT`).
 
 Environment the launcher honours: `CODEATLAS_DATA` (default `~/.codeatlas`),
 `CODEATLAS_PORT` (default 5173), `CODEATLAS_EDITOR` (e.g. `code -g {file}:{line}`),
-`CODEATLAS_OPEN_HOME=1` (open any file under `$HOME`, not only the analyzed roots).
+`CODEATLAS_OPEN_HOME=1` (open any file under `$HOME`, not only the roots the graph names;
+the graph's own root works on any drive, and system locations are always refused).
 
 Themes: light/dark follow the OS; the ☀/☾ button in the viewer overrides; `?theme=light`
 forces one for a screenshot. If the user wants different colours, copy

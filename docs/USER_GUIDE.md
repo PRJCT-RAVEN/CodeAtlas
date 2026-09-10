@@ -54,7 +54,7 @@ On Windows use `bin\codeatlas-viewer.cmd` (or the shell shim under Git Bash / WS
 | `CODEATLAS_PORT` | `5173` | viewer port (strict — never drifts) |
 | `CODEATLAS_EDITOR` | per platform | "Open in editor" command template, e.g. `code -g {file}:{line}`, `subl {file}:{line}` |
 | `CODEATLAS_ROOTS` | — | extra directories "Open in editor" may resolve into; platform path-list separator (`:` on macOS/Linux, `;` on Windows) |
-| `CODEATLAS_OPEN_HOME` | unset | `=1` lets "Open in editor" open anything under your home directory, not only the project |
+| `CODEATLAS_OPEN_HOME` | unset | `=1` lets "Open in editor" open anything under your home directory, not only the project being drawn |
 
 ---
 
@@ -121,7 +121,11 @@ else Xcode's `xed -l` on macOS / `code -g` elsewhere, falling back to the system
 executable. Relative locs resolve against the root node's `attrs.absRoot`, then the
 server's own roots plus anything in `CODEATLAS_ROOTS`; absolute locs are taken as-is. The
 result must be a regular file under one of those roots (or, with
-`CODEATLAS_OPEN_HOME=1`, anywhere under your home directory) — system files are refused.
+`CODEATLAS_OPEN_HOME=1`, anywhere under your home directory). The graph's own root is
+honoured on any drive, so a project outside your home directory needs no configuration;
+system locations (`/etc`, `/usr`, `/System`, `~/Library`, `C:\Windows`, `Program Files`,
+`AppData`, …) are refused whatever a graph asks for, and the check runs after symlinks are
+resolved.
 Only same-origin requests from a loopback `Host` are honoured, because the request shells
 out and a hostile web page must not be able to trigger it. The panel shows the reply.
 
@@ -279,7 +283,7 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 | Viewer says "waiting for live/graph.json…" | nothing published yet — ask Claude a question, or write a graph into `LIVE_DIR` (`bin/codeatlas-viewer paths`) |
 | Status bar shows a red poll error | the published file is invalid; the last good graph stays on screen. Run `node schema/validate.mjs <file>` and fix what it lists |
 | Graph didn't update | check the status bar (source file and counts); confirm you wrote to the `LIVE_DIR` the launcher prints, not the repo's `viewer/public/live/` |
-| "Open in editor" says `cannot resolve to an existing file` | the loc is relative and its root isn't known — add the directory to `CODEATLAS_ROOTS`, or set `CODEATLAS_OPEN_HOME=1` |
+| "Open in editor" says `cannot resolve to an existing file` | usually a missing file, or a loc outside the root the graph names (`attrs.absRoot`). Add the directory to `CODEATLAS_ROOTS` if the graph has no root. System paths are refused by design |
 | "Open in editor" opens the wrong app | set `CODEATLAS_EDITOR`, e.g. `code -g {file}:{line}` |
 | A huge graph opens nearly empty | that's the visibility budget — expand containers, or raise it with `?budget=2000,3000` |
 | `schema2ir` fails on SQLite | needs the `sqlite3` CLI on PATH (3.33+ for `-json`) |

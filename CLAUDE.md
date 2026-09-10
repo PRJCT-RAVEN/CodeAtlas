@@ -147,9 +147,12 @@ with `{file}`/`{line}`, e.g. `code -g {file}:{line}`), else per platform: macOS 
 editor (`open -t` / `xdg-open` for MIME-text files / Notepad — never `start`). Rules: Host
 must be loopback and `Sec-Fetch-Site` same-origin/none; a relative loc resolves against this
 repo, `$CODEATLAS_ROOTS` (platform path-list delimiter: `:` on macOS/Linux, `;` on Windows),
-or the root node's `attrs.absRoot` if that lies under `$HOME`; the result must be a regular
-file under one of those roots
-(`CODEATLAS_OPEN_HOME=1` widens the fence to all of `$HOME`) — system files are refused,
+or the root node's `attrs.absRoot` — honoured on any drive, so a project outside `$HOME`
+works with no configuration. The result must realpath to a regular file inside one of those
+roots and must not be a SYSTEM path (`/etc`, `/usr`, `/bin`, `/sbin`, `/dev`, `/System`,
+`/Library` and `~/Library`; on Windows `Windows\`, `Program Files\`, `ProgramData\`,
+`AppData\`) — the deny-list is applied AFTER realpath, so a symlink inside a project cannot
+smuggle one in. `CODEATLAS_OPEN_HOME=1` additionally allows anything under `$HOME`,
 and the generic opener is never handed an executable or a run-on-open type.
 
 ## Big graphs (database scale, 2026-09-05)

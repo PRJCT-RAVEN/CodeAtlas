@@ -27,7 +27,9 @@ conversationally; each answer is a new graph rendered live.
   `subl {file}:{line}`, …); otherwise Xcode on macOS, VS Code elsewhere, then a plain
   text editor (`open -t` / `xdg-open` / Notepad; never for executables). It only opens
   files under the project being drawn; set
-  `CODEATLAS_OPEN_HOME=1` to allow anything under your home directory.
+  files inside the project the graph names — on any drive, so a repo outside your home
+  directory works unconfigured — never system locations. `CODEATLAS_OPEN_HOME=1` also allows
+  anything under your home directory.
 - Tokens are billed to your own Claude Code account; the plugin adds no service of its
   own. Graph authoring is delegated to Sonnet/Haiku subagents where it can be.
 - Big graphs are fine: the viewer lays out only what is expanded. A 100k-node schema opens

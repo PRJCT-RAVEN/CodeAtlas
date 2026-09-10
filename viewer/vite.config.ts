@@ -76,13 +76,64 @@ function isFile(p: string): boolean {
   }
 }
 
-/** Roots a loc may resolve against / must lie under. */
-export function allowedRoots(root: string | null, roots: readonly string[] = DEFAULT_ROOTS, home = HOME): string[] {
+/**
+ * Directories "Open in editor" will never touch, whatever a graph asks for.
+ *
+ * The fence used to be an allow-list — a graph's `attrs.absRoot` was honoured only
+ * under $HOME — which kept /etc out but also broke every legitimate project on
+ * another drive or outside the home directory (D:\dev\app, /opt/src, /Volumes/Work).
+ * A deny-list is the better trade: the thing that actually bounds the request is
+ * "the file must live inside the root the graph names", and this list keeps that
+ * root from being somewhere it has no business being.
+ *
+ * Threat model: to reach here an attacker needs a hostile graph in the live dir AND
+ * a click on a crafted node. Anyone who can write to the live dir already has code
+ * execution as this user; the realistic case is a SHARED diagram. The damage is
+ * bounded anyway — the file opens in a text editor, and `safeForGenericOpen` already
+ * refuses runnable types.
+ */
+export function systemPrefixes(os: string = platform(), home = HOME): string[] {
+  if (os === "win32") {
+    const sysDrive = process.env.SystemDrive ?? "C:";
+    return [
+      `${sysDrive}\\Windows`,
+      `${sysDrive}\\Program Files`,
+      `${sysDrive}\\Program Files (x86)`,
+      `${sysDrive}\\ProgramData`,
+      join(home, "AppData"),
+    ];
+  }
+  // OS binaries, config and device trees. Deliberately NOT /var: the sensitive parts
+  // of it are unreadable to a normal user anyway, and on macOS $TMPDIR lives under
+  // /private/var, so denying it would refuse ordinary scratch directories.
+  const unix = ["/etc", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys", "/private/etc"];
+  // macOS: the system volume and the machine-wide app-support tree, plus the user's
+  // own ~/Library (keychains, app data, browser profiles — not source code)
+  return os === "darwin" ? [...unix, "/System", "/Library", join(home, "Library")] : unix;
+}
+
+/** True when `abs` is a system location no diagram has any business opening. */
+export function isSystemPath(abs: string, os: string = platform(), home = HOME): boolean {
+  return systemPrefixes(os, home).some((p) => abs === p || insideRoot(p, abs));
+}
+
+/**
+ * Roots a loc may resolve against / must lie under.
+ *
+ * A client-supplied `root=` (the graph's `attrs.absRoot`) is accepted anywhere it
+ * names a real directory that is not itself a system location — so a project on any
+ * drive works with no configuration. `$CODEATLAS_ROOTS` still adds roots explicitly.
+ */
+export function allowedRoots(
+  root: string | null,
+  roots: readonly string[] = DEFAULT_ROOTS,
+  home = HOME,
+  os: string = platform()
+): string[] {
   const out = roots.map(real).filter((r): r is string => !!r);
   if (root && isAbsolute(root)) {
     const r = real(resolve(root));
-    const h = real(home);
-    if (r && h && isDir(r) && (r === h || insideRoot(h, r))) out.unshift(r);
+    if (r && isDir(r) && !isSystemPath(r, os, home)) out.unshift(r);
   }
   return out;
 }
@@ -95,15 +146,19 @@ export function resolveLocFile(
   root: string | null,
   roots: readonly string[] = DEFAULT_ROOTS,
   home = HOME,
-  openHome: boolean = OPEN_HOME
+  openHome: boolean = OPEN_HOME,
+  os: string = platform()
 ): string | null {
   if (!file || file.includes("\0")) return null;
-  const allowed = allowedRoots(root, roots, home);
+  const allowed = allowedRoots(root, roots, home, os);
   const fences = [...allowed, ...(openHome ? [real(home)] : [])].filter((r): r is string => !!r);
   const candidates = isAbsolute(file) ? [file] : allowed.map((r) => resolve(r, file));
   for (const c of candidates) {
     const abs = real(c);
     if (!abs || !isFile(abs)) continue;
+    // realpath first, THEN the deny-list: a symlink inside an allowed root that
+    // points at /etc/passwd must not get through on the strength of its own path
+    if (isSystemPath(abs, os, home)) continue;
     if (fences.some((f) => insideRoot(f, abs))) return abs;
   }
   return null;
@@ -317,8 +372,8 @@ const openInEditor = (): Plugin => ({
         res.end(
           `cannot resolve to an existing file: ${file}\n` +
             `tried: ${allowedRoots(root).join(", ") || "(no roots)"}\n` +
-            `if the project lives elsewhere, start the viewer with CODEATLAS_ROOTS=<dir>` +
-            `${delimiter}<dir> (or CODEATLAS_OPEN_HOME=1 to allow anything under your home directory)`
+            `a graph's root (attrs.absRoot) is honoured on any drive, so this is usually a` +
+            ` missing file or a path outside it; CODEATLAS_ROOTS=<dir>${delimiter}<dir> adds roots explicitly`
         );
         return;
       }
