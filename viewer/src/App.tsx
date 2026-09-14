@@ -16,11 +16,13 @@ import "@xyflow/react/dist/style.css";
 import { layoutGraph, warmElk, type LayoutMode, type LayoutResult, type Point } from "./layout/elk";
 import { incrementalToggle } from "./layout/incremental";
 import { edgeStyle } from "./ir/families";
-import type { EdgeKind, GraphIR, NodeKind } from "./ir/types";
+import type { EdgeKind, GraphIR, NodeKind, IRNode } from "./ir/types";
 import { checkGraphShape } from "./ir/shape";
-import { isEmptyDelta } from "./ir/delta";
+import type { Delta } from "./ir/delta";
+import { skipForBudget } from "./ir/grouping";
+import { edgeKey } from "./ir/density";
 import { ElkEdge, type ElkEdgeType } from "./edges/ElkEdge";
-import { useAtlas } from "./store";
+import { useAtlas, crossesSelection, edgeIsPainted } from "./store";
 import { THEMES, SLOT_COUNT, applyTheme, initialTheme, rememberTheme, type Theme, type ThemeName } from "./theme";
 import { parseBudget, RENDER_WARN } from "./ir/budget";
 import "./styles.css";
@@ -98,7 +100,7 @@ type AtlasNode = Node<AtlasNodeData>;
 
 function AtlasNodeView({ data, selected }: NodeProps<AtlasNode>) {
   const slot = slotFor(data.kind);
-  const isBox = data.isContainer || data.collapsed;
+  const isBox = drawnAsBox(data);
   const archetype: Archetype = isBox ? "container" : classify(data.kind);
   const badge = data.typeKind ?? data.kind;
   const vars = {
@@ -137,10 +139,47 @@ const nodeTypes = { atlas: AtlasNodeView };
 const edgeTypes = { elk: ElkEdge };
 
 /** Visible-node count above which the `atlas-big` paint economies kick in. */
-export const BIG_VIEW = 800;
+export const BIG_VIEW = RENDER_WARN;
 /** A collapse/expand is laid out incrementally when the last full layout took longer than this, or the view is bigger than INCREMENTAL_MIN_NODES. */
 export const INCREMENTAL_MIN_MS = 300;
 export const INCREMENTAL_MIN_NODES = 400;
+/**
+ * …but never below this many visible nodes, however slow the last pass was measured to be.
+ *
+ * A full pass over a handful of nodes is cheap by definition, so an approximate one saves
+ * nothing and costs exactly what the incremental path trades away: routed edges become
+ * plain curves and chips land at path midpoints. One slow measurement (a cold engine, a
+ * busy machine, a background tab) used to be enough to answer the first collapse of an
+ * 18-node diagram with a visibly worse one — and `fullMs` is carried forward, so it stayed
+ * that way until "Tidy". `?incremental=1` still forces the path for benchmarking.
+ */
+export const INCREMENTAL_MIN_VISIBLE = 150;
+
+/**
+ * Incremental relayout, or a full ELK pass? Pure, and exported, so the three thresholds
+ * above are actually covered: this decision used to live inline in the layout effect,
+ * where no test could reach it, and two rounds of fixes to it shipped with none.
+ *
+ * `ready` is the structural half the caller establishes — same graph, same tidy epoch,
+ * exactly one container toggled away from the base layout. An explicit `?incremental=1`
+ * overrides the COST thresholds but never `ready`: there is no previous layout to splice
+ * a toggle into, so forcing the path would have nothing to splice onto.
+ */
+export function incrementalEligible(
+  prev: { fullMs: number; visible: number } | null,
+  ready: boolean,
+  pref: string | null,
+): boolean {
+  if (!prev || !ready) return false;
+  if (pref === "1") return true;
+  if (pref === "0") return false;
+  // expensive enough to be worth approximating…
+  const costly = prev.fullMs > INCREMENTAL_MIN_MS || prev.visible > INCREMENTAL_MIN_NODES;
+  // …and big enough that a full pass is not simply cheap. One slow measurement on a small
+  // view (a cold engine, a busy machine) otherwise downgraded every later toggle of it.
+  const worthIt = prev.visible >= INCREMENTAL_MIN_VISIBLE;
+  return costly && worthIt;
+}
 
 // Re-fit the viewport when a NEW graph lands (live graph.json swap). Collapse
 // toggles deliberately do NOT refit — that would fight manual navigation.
@@ -190,9 +229,19 @@ export function openQuery(ir: GraphIR, file: string, line: number): string {
 // Which graph to poll: `?graph=<name>` → live/<name>.json (a candidate view
 // that does not overwrite the shared live/graph.json), else live then sample.
 export function pollSources(search: string): string[] {
-  const name = new URLSearchParams(search).get("graph");
-  if (name && /^[A-Za-z0-9_-]+$/.test(name)) return [`live/${name}.json`];
-  return ["live/graph.json", "sample-graph.json"];
+  const raw = new URLSearchParams(search).get("graph");
+  if (raw === null || raw === "") return ["live/graph.json", "sample-graph.json"];
+  // `?graph=my-view.json` is the obvious mistake — the manual names the FILE it is staged
+  // as — so the extension is dropped rather than rejected.
+  const name = raw.replace(/\.json$/i, "");
+  if (/^[A-Za-z0-9_-]+$/.test(name)) return [`live/${name}.json`];
+  // A name that is still not a name must NOT fall through to the live pair. `?graph=` is a
+  // promise that the shared view is left alone (CLAUDE.md: "never falls back to the
+  // sample"), and falling back showed the user's live graph under the draft's URL — with
+  // `shot.mjs` writing a png of the wrong graph and exiting 0. This path cannot exist (the
+  // leading dot is unreachable through the charset above) so the viewer says what it is
+  // waiting for and nothing resolves.
+  return ["live/.invalid-graph-name.json"];
 }
 
 /** What the live loop carries between ticks (mutated by `pollOnce`). */
@@ -203,8 +252,97 @@ export interface PollState {
   liveSeen: boolean;
   /** Per-source ETag for the next If-None-Match. */
   etags: Map<string, string>;
+  /**
+   * Why the bytes in `last` failed to INSTALL (`setIR` threw), or null.
+   *
+   * The OTHER half of `failures` below, and it has to be separate because the two mean
+   * different things about the same phrase "the bytes you already have". A rejection is
+   * about bytes that were never accepted, so restoring the last good ones clears it. A
+   * render failure is about `last` ITSELF — the graph parsed, passed the shape guard, and
+   * `state.last` advanced (deliberately, so the poller does not spin on the same bytes) —
+   * so the same bytes arriving again prove nothing and must not clear it. Without this the
+   * warning lasted exactly one second and the status bar then looked healthy while a stale
+   * graph sat on screen and nothing would ever arrive to replace it.
+   */
+  renderFailed: string | null;
+  /**
+   * Why the bytes currently CACHED for a source were rejected, per url.
+   *
+   * The ETag is recorded before the body is parsed (it belongs to the bytes, not to the
+   * verdict), so a broken graph.json answers 304 from the next tick onwards. Without this
+   * the 304 branch below cleared the message after one second and the status bar then
+   * looked healthy while a STALE graph was on screen — the exact opposite of the promise
+   * that the viewer names the problem it is keeping the last good graph for.
+   */
+  failures: Map<string, string>;
 }
-export const newPollState = (): PollState => ({ last: "", liveSeen: false, etags: new Map() });
+/**
+ * The same question for a NODE, and the same generic answer.
+ *
+ * It was a hand-written list of six `data` keys beside four top-level ones, and it is
+ * complete today only because every field it omits (`extent`, `domAttributes`, and —
+ * redundantly — `zIndex` and `ariaLabel`) is derived from one it compares. That is the exact
+ * accident that hid a missing `inferred` on the edge side until round 18, so the node half
+ * gets the same treatment rather than waiting its turn.
+ */
+export function nodeUnchanged(
+  old: AtlasNode | undefined,
+  fresh: AtlasNode
+): boolean {
+  if (!old) return false;
+  if (
+    old.position.x !== fresh.position.x ||
+    old.position.y !== fresh.position.y ||
+    old.width !== fresh.width ||
+    old.height !== fresh.height ||
+    old.parentId !== fresh.parentId
+  )
+    return false;
+  const a = (old.data ?? {}) as Record<string, unknown>;
+  const b = fresh.data as Record<string, unknown>;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => a[k] === b[k]);
+}
+
+/**
+ * May the previous React Flow edge object be reused verbatim? (If so React Flow skips its
+ * DOM — the point of keeping `edgeObjs`.)
+ *
+ * Every `data` key is compared GENERICALLY rather than field by field, because the field
+ * list is what goes stale: `hairball` had to be added to it when the hairball economy
+ * landed, and nothing would have failed if it had not — a spliced view that crosses
+ * `FASTEST_EDGES` on an expand flips `hairball` while `dense` (and so `faint`) stays true,
+ * and the reused object would keep painting the cloud the tier just turned off. `inferred`
+ * was in fact missing from the hand-written list all along, saved only by `labelFor`
+ * appending "?" so the label differed anyway. Identity comparison on `points`/`labelPos` is
+ * deliberate and matches what the layout produces: unmoved edges keep the same array.
+ */
+export function edgeUnchanged(old: ElkEdgeType | undefined, fresh: ElkEdgeType): boolean {
+  if (!old) return false;
+  if (old.source !== fresh.source || old.target !== fresh.target || old.sourceHandle !== fresh.sourceHandle) return false;
+  const a = (old.data ?? {}) as Record<string, unknown>;
+  const b = fresh.data as Record<string, unknown>;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => a[k] === b[k]);
+}
+
+/**
+ * Should this tick write a status message at all?
+ *
+ * `undefined` is "this tick has no opinion" (leave whatever is showing); `null` is "clear
+ * it". Only a CHANGE is written: writing unconditionally re-rendered on every quiet poll,
+ * and now that a rejection is re-reported on every 304 (see `PollState.failures`), an
+ * unchanged error string would do the same once a second for as long as a broken graph sits
+ * in the live dir. Pure and exported because the decision otherwise lives in an effect
+ * where no test can reach it — the same reason `incrementalEligible` was extracted.
+ */
+export function writesAMessage(next: string | null | undefined, current: string | null): boolean {
+  return next !== undefined && next !== current;
+}
+
+export const newPollState = (): PollState => ({ last: "", liveSeen: false, etags: new Map(), failures: new Map(), renderFailed: null });
 
 /** One tick's decision: install a graph, show an error (`null` clears one), or neither. */
 export interface PollResult {
@@ -243,7 +381,9 @@ export async function pollOnce(
       // already have. Returning nothing left a previous tick's "missing (keeping last good
       // graph)" on screen forever once the file came back unchanged — the ETag still
       // matched, so no 200 ever arrived to clear it.
-      if (r.status === 304) return { error: null }; // unchanged since the last poll
+      // …but "the bytes we already have" are not necessarily GOOD bytes: if they failed to
+      // parse or failed the shape guard, that verdict still stands and must keep standing.
+      if (r.status === 304) return { error: state.failures.get(url) ?? state.renderFailed };
       if (r.status === 404) {
         if (state.liveSeen && url.startsWith("live/")) return { error: `${url}: missing (keeping last good graph)` };
         continue; // absent → next source
@@ -257,18 +397,29 @@ export async function pollOnce(
       if (signal?.aborted) return {};
       continue; // network hiccup — try next source / next tick
     }
-    if (text === state.last) return { error: null }; // restored to the last good bytes
+    // A rejection is remembered against the url, so the 304 that follows it re-reports the
+    // reason instead of clearing it; every path that accepts bytes forgets it again.
+    const reject = (msg: string): PollResult => {
+      state.failures.set(url, msg);
+      return { error: msg };
+    };
+    if (text === state.last) {
+      state.failures.delete(url); // a REJECTION was about other bytes; these are the accepted ones
+      return { error: state.renderFailed }; // …but "accepted" is not "rendered" — see renderFailed
+    }
     let g: unknown;
     try {
       g = JSON.parse(text);
     } catch (e) {
-      return { error: `${url}: invalid JSON (${e instanceof Error ? e.message : String(e)})` };
+      return reject(`${url}: invalid JSON (${e instanceof Error ? e.message : String(e)})`);
     }
     const problem = checkGraphShape(g);
-    if (problem) return { error: `${url}: ${problem}` };
+    if (problem) return reject(`${url}: ${problem}`);
     // Advance `last` BEFORE the caller renders: if installing the graph throws,
     // we must not spin on the same bad bytes — the next change retries.
+    state.failures.delete(url);
     state.last = text;
+    state.renderFailed = null; // a new graph gets its own verdict
     if (url.startsWith("live/")) state.liveSeen = true;
     return { ir: g as GraphIR, source: url };
   }
@@ -285,24 +436,31 @@ export async function pollOnce(
 export interface SearchIndex {
   ids: string[];
   parents: (string | undefined)[];
+  /** Ids that are never display nodes (the root, and grouping `file`s) — see `groupingSkip`. */
+  skipped: Set<string>;
   /** name + kind + id, lowercased, one entry per IR node. */
   hay: string[];
   at: Map<string, number>;
   root: string;
 }
 
-export function buildSearchIndex(ir: GraphIR): SearchIndex {
+export function buildSearchIndex(ir: GraphIR, skip: (n: IRNode) => boolean): SearchIndex {
   const ids: string[] = [];
   const parents: (string | undefined)[] = [];
   const hay: string[] = [];
   const at = new Map<string, number>();
+  // Every IR node is INDEXED — the parent chain has to stay complete, or the walk that
+  // keeps a match's visible container lit stops at the first skipped ancestor. What the
+  // skipped ones must not be is MATCHES.
+  const skipped = new Set<string>();
   for (const n of ir.nodes) {
     at.set(n.id, ids.length);
     ids.push(n.id);
     parents.push(n.parent);
     hay.push(`${n.name}\u0000${n.kind}\u0000${n.id}`.toLowerCase());
+    if (skip(n)) skipped.add(n.id);
   }
-  return { ids, parents, hay, at, root: ir.root };
+  return { ids, parents, hay, at, root: ir.root, skipped };
 }
 
 /** Ids whose name, kind or id contains the query; null when nothing is filtered. */
@@ -310,7 +468,11 @@ export function searchMatches(index: SearchIndex | null, query: string): Set<str
   const q = query.trim().toLowerCase();
   if (!index || !q) return null;
   const out = new Set<string>();
-  for (let i = 0; i < index.hay.length; i++) if (index.hay[i].includes(q)) out.add(index.ids[i]);
+  // A node that is never a display node is not a match: no expand can reveal it, so
+  // counting it as "+N hidden" promises something no click can deliver. Its children are
+  // display nodes and match on their own ids, which carry the skipped file's path anyway.
+  for (let i = 0; i < index.hay.length; i++)
+    if (index.hay[i].includes(q) && !index.skipped.has(index.ids[i])) out.add(index.ids[i]);
   return out;
 }
 
@@ -330,13 +492,74 @@ export function hiddenMatchesOf(
     return i === undefined ? undefined : index.parents[i];
   };
   for (const id of matched) {
-    if (shown.has(id) || id === index.root) continue;
+    // `index.skipped`, not `id === index.root`: this was the FOURTH copy of the rule for
+    // "which nodes are never drawn" (after the layout, the budget and the Key), and it was
+    // the pre-grouping version. A grouping `file` counted as a hidden match that no expand
+    // could ever reveal, and its display parent is often the root — the canvas — so there
+    // was nothing to light either: "0 +1 hidden", with nothing to click.
+    if (shown.has(id) || index.skipped.has(id)) continue;
     hidden++;
     let p = parentOf(id);
     while (p && !shown.has(p)) p = parentOf(p);
     if (p) lit.add(p);
   }
   return { hidden, lit };
+}
+
+
+/** One row of the details panel's edge list. */
+export interface Connection {
+  id: string;
+  out: boolean;
+  /** How many source relations this display edge stands for — what the chip shows as `×N`. */
+  count: number;
+  selfLoop: boolean;
+  otherName: string;
+  /** Which node inside the selection the edge leaves, when that is not the selected node itself. */
+  nearName: string | null;
+  label: string;
+}
+
+/**
+ * The selection's edges, biggest first — the readable form of a view whose chips are not drawn.
+ *
+ * `lit` is the selected node AND its subtree (store.litIds), because clicking a container
+ * expands it and an expanded container is no longer an edge endpoint. An edge with BOTH
+ * ends inside the selection is internal to it and says nothing about how it connects
+ * outward — except a SELF-LOOP, which is recursion: `layout/elk.ts` only ever keeps one
+ * that was authored on a visible node, and the canvas draws it, so dropping it here made
+ * the panel and the picture disagree.
+ */
+export function connectionsOf(
+  edges: readonly ElkEdgeType[],
+  lit: ReadonlySet<string>,
+  selected: string,
+  names: ReadonlyMap<string, string>
+): Connection[] {
+  // The edge's own count, not a number scraped back out of its rendered label. The display
+  // edge has carried `count` all along; recovering it from the chip text meant an author's
+  // `annotations.<edge>.label` — which REPLACES that text — sorted as 1. The shipped
+  // showcase graph has exactly that shape (`count: 2` with `label: "payment failed"`), so
+  // its heaviest connection was listed last.
+  return edges
+    .filter((e) => crossesSelection(lit, e.source, e.target))
+    .map((e) => {
+      const out = lit.has(e.source);
+      const other = out ? e.target : e.source;
+      const near = out ? e.source : e.target;
+      return {
+        id: e.id,
+        out,
+        selfLoop: e.source === e.target,
+        otherName: names.get(other) ?? other,
+        // Selecting a container lights its whole subtree, so without the near end every row
+        // of a 272-edge list read identically ("references ×4 from group:g0001").
+        nearName: near === selected ? null : (names.get(near) ?? near),
+        label: e.data?.label ?? "",
+        count: e.data?.count ?? 1,
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.otherName.localeCompare(b.otherName));
 }
 
 // --- keyboard activation ------------------------------------------------------
@@ -372,6 +595,100 @@ function EdgeSwatch({ kind, dashed }: { kind: EdgeKind; dashed?: boolean }) {
   );
 }
 
+/**
+ * A DISPLAY edge's delta, from its own constituents. Several IR edges fold into one display
+ * edge whenever a container is collapsed, so "some constituent was added" is the wrong
+ * question: an edge that merely GREW from `calls ×3` to `calls ×4` was painted green as new,
+ * and one that SHRANK got nothing while the status bar said "−1 removed" about a connection
+ * still on screen. The right questions are the display edge's own — was any of me here
+ * before, and if so has my summed multiplicity changed?
+ */
+export function displayEdgeDelta(
+  irIds: readonly string[],
+  count: number,
+  delta: Pick<Delta, "compared" | "prevCount">,
+  /** Summed multiplicity of REMOVED IR edges that used to fold into this display edge. */
+  removedBefore = 0
+): "added" | "modified" | undefined {
+  if (!delta.compared) return undefined; // first load or a new root: nothing is a change
+  let before = removedBefore;
+  let any = removedBefore > 0;
+  for (const id of irIds) {
+    const c = delta.prevCount.get(id);
+    if (c !== undefined) {
+      any = true;
+      before += c;
+    }
+  }
+  if (!any) return "added";
+  return before !== count ? "modified" : undefined;
+}
+
+/**
+ * Where each REMOVED IR edge would fold today, summed by display-edge key — the part of a
+ * display edge's previous multiplicity that its current `irIds` cannot see.
+ */
+export function removedByDisplayKey(
+  removed: Delta["removedEdgeRecords"],
+  rep: (id: string) => string | undefined
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of removed) {
+    const s = rep(r.from);
+    const t = rep(r.to);
+    if (s === undefined || t === undefined) continue; // an endpoint that renders nowhere now
+    if (s === t && r.from !== r.to) continue; // folded onto one node: not a display edge
+    const k = edgeKey(r.kind, s, t);
+    out.set(k, (out.get(k) ?? 0) + r.count);
+  }
+  return out;
+}
+
+/**
+ * What the status bar reports about a republish. Both halves count the same things — nodes
+ * plus DRAWN edges — because they did not: "+N added" counted edges and "−N removed" counted
+ * only nodes, so a display edge that vanished was reported nowhere at all (not the canvas,
+ * not the Key, not here). `contains` is already excluded upstream in `diffIR`.
+ */
+export function deltaCounts(d: Delta): { added: number; modified: number; removed: number } {
+  return {
+    added: d.added.size + d.addedEdges.size,
+    modified: d.modified.size + d.modifiedEdges.size,
+    removed: d.removed.length + d.removedEdges.length,
+  };
+}
+
+/**
+ * How many matches are ON SCREEN — the left half of "N +M hidden", which with `hiddenMatchesOf`
+ * must account for every match exactly once.
+ *
+ * MATCHES, not "nodes that are not dimmed": a container holding hidden matches is lit rather
+ * than dimmed so the user can find their way to them, and counting those made the box read
+ * "531 +216 hidden" where 720 nodes matched — the 27 lit tables counted once as matches and
+ * again inside the 216. Pure and exported because it lived inline in JSX, where the fix that
+ * corrected it could not be pinned by anything.
+ */
+export function visibleMatchCount(
+  nodes: readonly { id: string }[],
+  matched: ReadonlySet<string> | null,
+  query: string
+): number | null {
+  if (!query.trim()) return null;
+  return matched ? nodes.filter((n) => matched.has(n.id)).length : 0;
+}
+
+/**
+ * Does this node get the container treatment? The ONE expression, and it had SIX copies: the
+ * node renderer, the Key's swatch, the MiniMap colour, `aria-expanded`, the click handler and
+ * the keyboard handler. A COLLAPSED container is still drawn as a box (a chip) — a legend
+ * that asked only `isContainer` described a collapsed `module` with the leaf swatch — and it
+ * is still the thing Enter/Space and a click toggle, so every one of them has to agree.
+ * (`zIndex` and the `ariaLabel` text deliberately ask `isContainer` alone: an expanded
+ * container is stacked and named differently from a collapsed one.)
+ */
+export const drawnAsBox = (d: { isContainer?: boolean; collapsed?: boolean }): boolean =>
+  d.isContainer === true || d.collapsed === true;
+
 function NodeSwatch({ kind, isContainer }: { kind: NodeKind; isContainer: boolean }) {
   const slot = slotFor(kind);
   const archetype: Archetype = isContainer ? "container" : classify(kind);
@@ -387,24 +704,76 @@ function NodeSwatch({ kind, isContainer }: { kind: NodeKind; isContainer: boolea
   return <span style={{ ...base, background: `var(--pastel-${slot})`, borderRadius: 3 }} />;
 }
 
-function Key({ ir, hasInferred, hasDelta }: { ir: GraphIR; hasInferred: boolean; hasDelta: boolean }) {
-  const { nodeKinds, edgeKinds } = useMemo(() => {
-    const parents = new Set(ir.nodes.map((n) => n.parent).filter(Boolean));
-    const nk = new Map<string, boolean>(); // kind → does any node of it render as a container?
-    for (const n of ir.nodes) {
-      if (n.id === ir.root || (n.kind === "file" && parents.has(n.id))) continue;
-      nk.set(n.kind, (nk.get(n.kind) ?? false) || parents.has(n.id));
-    }
-    const ek = [...new Set(ir.edges.filter((e) => e.kind !== "contains").map((e) => e.kind))].sort();
-    return { nodeKinds: [...nk.entries()].sort(([a], [b]) => (a < b ? -1 : 1)), edgeKinds: ek };
-  }, [ir]);
+/**
+ * Legend rows: the kinds actually on screen, and whether each renders as a container.
+ *
+ * `groupingSkip`, not a copy of it. This was the THIRD copy of that rule and round 16
+ * unified only the two in `elk.ts` and `budget.ts`, so the Key kept the pre-round-16
+ * behaviour: a `file` with children was never listed, including the ones now drawn as
+ * containers because they carry edges. The canvas showed four `FILE` containers and the
+ * legend had no `file` row at all; in a mixed view it showed ONE `file` row with the store
+ * swatch while two of the three files on screen were containers. Exported so this is
+ * testable — the Key had no test of any kind.
+ */
+export function keyRows(
+  nodes: readonly { data: { kind: string; isContainer?: boolean; collapsed?: boolean; delta?: string } }[],
+  edges: readonly { data?: { kind?: string; inferred?: boolean; delta?: string } | undefined }[]
+): { nodeKinds: [string, boolean][]; edgeKinds: string[]; inferred: boolean; added: boolean; modified: boolean } {
+  // One row per (kind, TREATMENT) actually on screen, not per kind. A kind can be both:
+  // since a `file` that carries an edge is drawn as a container while a leaf `file` is drawn
+  // as a store, `package > {a,b,c}.ts + README.md` puts four `file` nodes on the canvas in
+  // two different shapes. Folding them into one row with the treatments OR-ed described
+  // whichever happened to win and left the other unexplained — in both directions, since the
+  // legend is what a reader consults precisely when a shape is unfamiliar.
+  const seen = new Set<string>();
+  const rows: [string, boolean][] = [];
+  for (const n of nodes) {
+    const isContainer = drawnAsBox(n.data);
+    const k = `${n.data.kind}\u0000${isContainer}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    rows.push([n.data.kind, isContainer]);
+  }
+  rows.sort(([a, ac], [b, bc]) => (a < b ? -1 : a > b ? 1 : ac === bc ? 0 : ac ? -1 : 1));
+  // Edge kinds come from the DISPLAY edges, not the file: an `imports` row beside a canvas
+  // with no arrows is exactly the tell rounds 16-18 each used to find silently destroyed
+  // edges, so a legend that over-lists by construction retires the diagnostic.
+  //
+  // DISPLAY edges, not PAINTED ones. In a hairball view none of them is drawn until a node
+  // is traced, and the row is still right: the edges exist, the status bar says how many are
+  // hidden and why, and the legend explains the stroke the user is about to see. Filtering by
+  // `edgeIsPainted` here would make the row vanish and reappear on every selection. The
+  // diagnostic above survives because the hairball case ANNOUNCES itself — what it caught was
+  // edges that were gone with nothing said anywhere.
+  const ek = [...new Set(edges.map((e) => e.data?.kind).filter((k): k is string => !!k))].sort();
+  // The delta and "inferred" rows come off the RENDERED objects too, for the same reason the
+  // kinds do. They used to read `diffIR` over the whole IR, which knows nothing about
+  // collapse state: a republish that added one node INSIDE a `collapsedByDefault` container
+  // put a green "added since last graph" swatch in the legend with nothing green anywhere on
+  // the canvas — and when the addition was an EDGE, the status bar stayed silent at the same
+  // time, because it counts nodes only while the Key counted nodes plus edges. Two chrome
+  // elements describing one event and disagreeing.
+  return {
+    nodeKinds: rows,
+    edgeKinds: ek,
+    inferred: edges.some((e) => e.data?.inferred === true),
+    added: nodes.some((n) => n.data.delta === "added") || edges.some((e) => e.data?.delta === "added"),
+    modified: nodes.some((n) => n.data.delta === "modified") || edges.some((e) => e.data?.delta === "modified"),
+  };
+}
+
+function Key({ nodes, edges }: { nodes: readonly AtlasNode[]; edges: readonly ElkEdgeType[] }) {
+  const { nodeKinds, edgeKinds, inferred: hasInferred, added, modified } = useMemo(
+    () => keyRows(nodes, edges),
+    [nodes, edges]
+  );
   return (
     <details className="key" open>
       <summary>Key</summary>
       <div className="key-body">
         <div className="key-section">
           {nodeKinds.map(([kind, isC]) => (
-            <div className="key-row" key={kind}>
+            <div className="key-row" key={`${kind}:${isC}`}>
               <NodeSwatch kind={kind} isContainer={isC} />
               <span>{kind}</span>
             </div>
@@ -426,16 +795,23 @@ function Key({ ir, hasInferred, hasDelta }: { ir: GraphIR; hasInferred: boolean;
             )}
           </div>
         )}
-        {hasDelta && (
+        {(added || modified) && (
           <div className="key-section">
-            <div className="key-row">
-              <span className="swatch-delta added" />
-              <span>added since last graph</span>
-            </div>
-            <div className="key-row">
-              <span className="swatch-delta modified" />
-              <span>modified</span>
-            </div>
+            {/* Each row gated on its OWN set. `!isEmptyDelta(delta)` is true for REMOVALS
+                alone, which have no swatch at all, so a republish that only deletes nodes
+                put both rows in the legend beside "+0 added · ~0 modified". */}
+            {added && (
+              <div className="key-row">
+                <span className="swatch-delta added" />
+                <span>added since last graph</span>
+              </div>
+            )}
+            {modified && (
+              <div className="key-row">
+                <span className="swatch-delta modified" />
+                <span>modified</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -448,7 +824,7 @@ function Key({ ir, hasInferred, hasDelta }: { ir: GraphIR; hasInferred: boolean;
 function minimapColorFor(t: Theme): (n: AtlasNode) => string {
   return (n) => {
     const d = n.data;
-    if (d.isContainer || d.collapsed) return t.tokens["--minimap-container"];
+    if (drawnAsBox(d)) return t.tokens["--minimap-container"];
     if (d.kind === "overflow") return t.tokens["--minimap-overflow"];
     const slot = slotFor(d.kind);
     if (classify(d.kind) === "process") return t.tokens["--process-fill"];
@@ -562,9 +938,14 @@ export function savePositions(root: string, m: Map<string, Point>) {
 // --- app ---------------------------------------------------------------------
 
 export default function App() {
-  const { ir, delta, collapsed, selected, status, budget, budgetInfo, lastToggle, setBudget, setIR, setPollError, toggleCollapse, collapseToFit, select } = useAtlas();
+  const { ir, delta, collapsed, selected, litIds, status, budget, budgetInfo, lastToggle, setBudget, setIR, setPollError, toggleCollapse, collapseToFit, select } = useAtlas();
   const [nodes, setNodes] = useState<AtlasNode[]>([]);
   const [edges, setEdges] = useState<ElkEdgeType[]>([]);
+  // ONE display-node predicate for this (graph, budget) — the layout, the incremental
+  // splicer, the Key and the search index all get this exact function, and `autoCollapse`
+  // derives the same one from `skipForBudget`. Four separate copies of the rule is how it
+  // came to be wrong in all of them at once.
+  const skip = useMemo(() => (ir ? skipForBudget(ir, budget) : () => false), [ir, budget]);
   const [layingOut, setLayingOut] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode | null>(null);
   // last layout (for incremental toggles) and the "Tidy" counter that forces a full pass
@@ -591,6 +972,8 @@ export default function App() {
   // bumped only when a layout for a NEW ir lands — drives AutoFit
   const [fitEpoch, setFitEpoch] = useState(0);
   const lastFitIr = useRef<GraphIR | null>(null);
+  /** "Collapse to fit" was clicked: refit once the resulting layout lands, not before. */
+  const refitPending = useRef(false);
   const positions = useRef<{ root: string | null; map: Map<string, Point> }>({ root: null, map: new Map() });
 
   // `?budget=<nodes>[,<edges>]` overrides the visibility budget (ir/budget.ts);
@@ -626,14 +1009,16 @@ export default function App() {
       try {
         const r = await pollOnce(sources, state, (url, init) => fetch(url, init), ctrl.signal);
         if (ctrl.signal.aborted) return;
-        // `error: null` only clears a message that is actually up; writing it
-        // unconditionally would re-render on every quiet poll.
-        if (r.error !== undefined && (r.error !== null || useAtlas.getState().status.error)) setPollError(r.error);
+        if (writesAMessage(r.error, useAtlas.getState().status.error)) setPollError(r.error!);
         if (r.ir) setIR(r.ir, r.source!);
       } catch (e) {
         // `state.last` was already advanced for a graph that parsed and passed the
         // shape guard, so we do not spin on the same bad bytes; the next change retries.
-        if (!ctrl.signal.aborted) setPollError(`render failed: ${e instanceof Error ? e.message : String(e)}`);
+        if (!ctrl.signal.aborted) {
+          const msg = `render failed: ${e instanceof Error ? e.message : String(e)}`;
+          state.renderFailed = msg; // …and keep saying so on the 304s that follow
+          setPollError(msg);
+        }
       } finally {
         if (!ctrl.signal.aborted) timer = window.setTimeout(tick, 1000);
       }
@@ -669,11 +1054,15 @@ export default function App() {
       for (const x of b) if (!a.has(x)) { if (x !== id) return false; diff++; }
       return diff === 1;
     };
-    const eligible =
-      !!lastToggle && !!prev && prev.ir === ir && prev.tidy === tidyEpoch && oneToggleAway(prev.collapsed, collapsed, lastToggle) &&
-      (incrementalPref === "1" || (incrementalPref !== "0" && (prev.fullMs > INCREMENTAL_MIN_MS || prev.result.nodes.length > INCREMENTAL_MIN_NODES)));
-    const full = () => layoutGraph(ir, collapsed, { pinned: positions.current.map, labelFor });
-    const run = eligible ? incrementalToggle(ir, collapsed, lastToggle!, prev!.result, { labelFor }).then((r) => r ?? full()) : full();
+    const ready =
+      !!lastToggle && !!prev && prev.ir === ir && prev.tidy === tidyEpoch && oneToggleAway(prev.collapsed, collapsed, lastToggle);
+    const eligible = incrementalEligible(
+      prev ? { fullMs: prev.fullMs, visible: prev.result.nodes.length } : null,
+      ready,
+      incrementalPref,
+    );
+    const full = () => layoutGraph(ir, collapsed, { pinned: positions.current.map, labelFor, skip });
+    const run = eligible ? incrementalToggle(ir, collapsed, lastToggle!, prev!.result, { labelFor, skip }).then((r) => r ?? full()) : full();
     run
       .then((result) => {
         const { nodes: ln, edges: le, mode } = result;
@@ -709,7 +1098,7 @@ export default function App() {
               // a screen reader announces an aria-expanded change on the same element,
               // where a changed label alone is silent. Only on nodes that actually toggle.
               domAttributes:
-                n.isContainer || n.collapsed ? { "aria-expanded": n.collapsed ? "false" : "true" } : undefined,
+                drawnAsBox(n) ? { "aria-expanded": n.collapsed ? "false" : "true" } : undefined,
               // stacking: edges (2, pinned in CSS) < containers (3) < leaf marks (4)
               zIndex: n.isContainer ? 3 : 4,
               data: {
@@ -723,13 +1112,7 @@ export default function App() {
               },
             };
             const old = nodeObjs.current.get(n.ir.id);
-            const same =
-              old &&
-              old.position.x === fresh.position.x && old.position.y === fresh.position.y &&
-              old.width === fresh.width && old.height === fresh.height && old.parentId === fresh.parentId &&
-              old.zIndex === fresh.zIndex &&
-              old.ariaLabel === fresh.ariaLabel &&
-              (["label", "kind", "typeKind", "isContainer", "collapsed", "delta"] as const).every((k) => old.data[k] === fresh.data[k]);
+            const same = nodeUnchanged(old, fresh);
             const obj = same ? old! : fresh;
             nextNodeObjs.set(n.ir.id, obj);
             return obj;
@@ -737,11 +1120,19 @@ export default function App() {
         );
         nodeObjs.current = nextNodeObjs;
         const nextEdgeObjs = new Map<string, ElkEdgeType>();
+        // Removed IR edges resolved onto the display edges they used to belong to, under THIS
+        // layout's collapse state — the half of a display edge's previous multiplicity that
+        // its surviving `irIds` cannot see (a shrink).
+        const removedByKey = removedByDisplayKey(delta.removedEdgeRecords, result.rep);
         setEdges(
           le.map((e) => {
             const st = edgeStyle(e.kind);
             const inferred = inferredOf(e.irIds);
-            const importance = Math.max(...e.irIds.map((id) => ann[id]?.importance ?? 0.5));
+            // reduce, not Math.max(...): one display edge can aggregate every IR edge
+            // between two collapsed containers, and spreading ~125k of them into a call
+            // overflows the argument stack (layout/incremental.ts:childIndex made the
+            // same trade for the same reason)
+            const importance = e.irIds.reduce((m, id) => Math.max(m, ann[id]?.importance ?? 0.5), 0);
             const width = 1.1 + Math.min(1, Math.max(0, importance)) * 1.2;
             const fresh = {
               id: e.id,
@@ -753,6 +1144,8 @@ export default function App() {
               markerEnd: { type: MarkerType.ArrowClosed, color: st.color, width: 14, height: 14 },
               zIndex: 2,
               data: {
+                kind: e.kind, // the Key reads this: the kinds DRAWN, not the kinds in the file
+                count: e.count, // the details panel orders by this — never by parsing the label
                 points: e.points,
                 labelPos: e.labelPos,
                 label: e.label,
@@ -760,17 +1153,13 @@ export default function App() {
                 dash: inferred ? "4 4" : st.dash,
                 width,
                 inferred,
-                delta: e.irIds.some((id) => delta.addedEdges.has(id)) ? ("added" as const) : undefined,
+                delta: displayEdgeDelta(e.irIds, e.count, delta, removedByKey.get(edgeKey(e.kind, e.source, e.target))),
                 faint: mode.dense,
+                hairball: mode.hairball,
               },
             } satisfies ElkEdgeType;
             const old = edgeObjs.current.get(e.id);
-            const same =
-              old && old.source === fresh.source && old.target === fresh.target &&
-              old.sourceHandle === fresh.sourceHandle && old.data?.points === fresh.data.points &&
-              old.data?.labelPos === fresh.data.labelPos && old.data?.label === fresh.data.label &&
-              old.data?.color === fresh.data.color && old.data?.dash === fresh.data.dash &&
-              old.data?.width === fresh.data.width && old.data?.delta === fresh.data.delta && old.data?.faint === fresh.data.faint;
+            const same = edgeUnchanged(old, fresh);
             const obj = same ? old! : fresh;
             nextEdgeObjs.set(e.id, obj);
             return obj;
@@ -779,14 +1168,27 @@ export default function App() {
         edgeObjs.current = nextEdgeObjs;
         setLayoutError(null);
         setLayingOut(false);
-        if (lastFitIr.current !== ir) {
+        // Refit on a NEW graph, and on an explicit "collapse to fit" — but only once the
+        // layout that collapse produced has actually landed. Bumping the epoch in the
+        // click handler fit the PREVIOUS node set: `AutoFit` runs 60 ms later and the ELK
+        // pass takes 400-600 ms, so the viewport ended up bit-identical to where it was
+        // and most survivors were off-screen. (It appeared to work only because React
+        // Flow re-fits by itself when it meets an unmeasured node — luck, and gone with
+        // `?culling=0`.)
+        if (lastFitIr.current !== ir || refitPending.current) {
           lastFitIr.current = ir;
+          refitPending.current = false;
           setFitEpoch((e) => e + 1);
         }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setLayingOut(false);
+        // A pending refit belongs to the layout that just failed. Leaving it set would
+        // hand it to the NEXT successful layout — typically an unrelated user collapse,
+        // which must never refit. (A CANCELLED pass keeps it on purpose: the layout that
+        // superseded it is the one the user is waiting for.)
+        refitPending.current = false;
         setLayoutError(err instanceof Error ? err.message : String(err));
       });
     return () => {
@@ -801,7 +1203,7 @@ export default function App() {
   // are hidden, so a column name is findable in a 100k-node schema. The scan
   // itself is memoised (see SearchIndex) so only the tagging repeats per layout.
   const [hiddenMatches, setHiddenMatches] = useState(0);
-  const searchIndex = useMemo(() => (ir ? buildSearchIndex(ir) : null), [ir]);
+  const searchIndex = useMemo(() => (ir ? buildSearchIndex(ir, skip) : null), [ir, skip]);
   const matched = useMemo(() => searchMatches(searchIndex, query), [searchIndex, query]);
   useEffect(() => {
     const { hidden, lit } =
@@ -837,14 +1239,14 @@ export default function App() {
   };
   const onNodeClick: NodeMouseHandler = (_ev, node) => {
     const d = node.data as AtlasNodeData;
-    activate(node.id, d.isContainer || d.collapsed);
+    activate(node.id, drawnAsBox(d));
   };
   const onCanvasKeyDown = (ev: React.KeyboardEvent<HTMLDivElement>) => {
     const id = keyActivation(ev.key, ev.target as unknown as KeyTarget);
     if (!id) return;
     ev.preventDefault(); // Space would scroll the pane
     const d = nodeObjs.current.get(id)?.data;
-    activate(id, !!d && (d.isContainer || d.collapsed));
+    activate(id, !!d && drawnAsBox(d));
   };
   // Escape closes the details panel from anywhere — React Flow's own Escape
   // only clears its internal selection. Not while a text field has focus, though:
@@ -877,24 +1279,38 @@ export default function App() {
   const rootNode = ir ? ir.nodes.find((n) => n.id === ir.root) : undefined;
   const title = ir?.title ?? rootNode?.name ?? null;
   const description = ir?.description ?? (ir ? ir.annotations?.[ir.root]?.summary : undefined) ?? null;
-  const hasInferred = edges.some((e) => e.data?.inferred);
-  const hasDelta = !isEmptyDelta(delta);
-  const matchCount = query.trim() ? nodes.filter((n) => !n.data.dim).length : null;
+  // MATCHES on screen, not "nodes that are not dimmed": a container holding hidden matches
+  // is lit rather than dimmed so the user can find their way to them, and counting those as
+  // matches made the two numbers in the box contradict each other. Measured on a 3-schema x
+  // 30-table x 8-column graph, query "col": 720 columns match, 504 are on screen and 216 are
+  // inside the 27 collapsed tables — and the box read "531 +216 hidden", counting those 27
+  // tables once as matches (their own text contains no "col") and again inside the 216,
+  // advertising 747 matches where there are 720.
+  const matchCount = visibleMatchCount(nodes, matched, query);
+  const counts = deltaCounts(delta);
   // Every display edge touching the selected node, biggest first — the
   // readable form of a dense view's edges (their chips are not drawn).
-  const connections = useMemo(() => {
-    if (!selected || !ir) return [];
-    const names = new Map(ir.nodes.map((n) => [n.id, n.name]));
-    const count = (l: string) => Number(/×(\d+)/.exec(l)?.[1] ?? 1);
-    return edges
-      .filter((e) => e.source === selected || e.target === selected)
-      .map((e) => {
-        const out = e.source === selected;
-        const other = out ? e.target : e.source;
-        return { id: e.id, out, otherName: names.get(other) ?? other, label: e.data?.label ?? "" };
-      })
-      .sort((a, b) => count(b.label) - count(a.label) || a.otherName.localeCompare(b.otherName));
-  }, [edges, selected, ir]);
+  // Same subtree rule as the canvas (store.litIds): an expanded container is not an edge
+  // endpoint, its children are, so listing only edges naming the selected id left the
+  // panel empty for every container the user clicked open. An edge with BOTH ends inside
+  // the selection is internal to it and says nothing about how it connects outward.
+  const connections = useMemo(
+    () => (selected && ir ? connectionsOf(edges, litIds, selected, new Map(ir.nodes.map((n) => [n.id, n.name]))) : []),
+    [edges, selected, ir, litIds]
+  );
+  // What the status bar may honestly call "hidden": the ones that are actually not drawn.
+  // It used to report `edges.length` — every display edge — so after a selection lit 355 of
+  // them the bar still claimed all 1,229 were hidden.
+  const hiddenEdges = useMemo(
+    () =>
+      edges.reduce(
+        (n, e) =>
+          n +
+          (edgeIsPainted(litIds, e.source, e.target, e.data) ? 0 : 1),
+        0
+      ),
+    [edges, litIds]
+  );
   const extraAttrs = selectedNode?.attrs
     ? Object.entries(selectedNode.attrs).filter(([k, v]) => !["typeKind", "access", "absRoot"].includes(k) && v != null)
     : [];
@@ -938,7 +1354,7 @@ export default function App() {
       </CanvasBoundary>
       {ir && (
         <div className="key-stack">
-          <Key ir={ir} hasInferred={hasInferred} hasDelta={hasDelta} />
+          <Key nodes={nodes} edges={edges} />
           <div className="search">
             <input
               type="search"
@@ -986,11 +1402,27 @@ export default function App() {
             title={`${nodes.length} nodes are on screen. Above about ${RENDER_WARN} the layout drops to a faster, rougher tier and panning slows down. "Collapse to fit" re-applies the visibility budget (${budget.maxVisible} nodes / ${budget.maxEdges} edges — change with ?budget=N,E).`}
           >
             ⚠ {nodes.length} visible
-            <button onClick={collapseToFit}>collapse to fit</button>
+            {/* Refit AFTER the resulting layout lands (see refitPending). Collapse toggles
+                deliberately do not refit — that fights manual navigation — but this one can
+                take 1,500 nodes down to a handful, and at the zoom fitted for 1,500 the
+                survivors are off-screen: the button appeared to delete the graph. */}
+            <button
+              onClick={() => {
+                // Only refit if it actually collapsed something: on a flat level under the
+                // root there is no candidate to fold, and a refit would throw away the
+                // user's pan in exchange for nothing.
+                if (collapseToFit()) refitPending.current = true;
+              }}
+            >
+              collapse to fit
+            </button>
           </span>
         )}
         {budgetInfo && budgetInfo.autoCollapsed > 0 && (
-          <span title={`visible ${budgetInfo.visible} of ${budgetInfo.total} · ${budgetInfo.edges} edges drawn · budget ${budget.maxVisible} nodes / ${budget.maxEdges} edges (?budget=N,E)`}>
+          // `nodes.length`/`edges.length`, not `budgetInfo.visible`/`.edges`: those are the
+          // budget PASS's figures and go stale the moment the user toggles anything, so the
+          // tooltip said "visible 503" beside text reading "showing 757".
+          <span title={`visible ${nodes.length} of ${budgetInfo.total} · ${edges.length} edges drawn · budget ${budget.maxVisible} nodes / ${budget.maxEdges} edges (?budget=N,E)`}>
             {budgetInfo.autoCollapsed} auto-collapsed · showing {nodes.length}/{budgetInfo.total}
           </span>
         )}
@@ -1004,17 +1436,27 @@ export default function App() {
           </span>
         )}
         {layoutMode?.dense && !layingOut && (
-          <span title="dense view: more than 3 edges per node — edges are drawn faint; select a node to light up its edges">
-            edges faint · select a node to trace them
+          <span
+            title={
+              layoutMode.hairball
+                ? `dense view: ${edges.length} edges between ${nodes.length} nodes — too many to read as a picture, so an edge is drawn only while it touches the selection (or is newly added). The details panel lists the selection's edges with counts.`
+                : "dense view: more than 3 edges per node — edges are drawn faint; select a node to light up its edges"
+            }
+          >
+            {layoutMode.hairball
+              ? `${hiddenEdges} of ${edges.length} edges hidden · select a node to trace them`
+              : "edges faint · select a node to trace them"}
           </span>
         )}
         {status.error && <span title="the last good graph stays on screen">⚠ {status.error}</span>}
         {layoutError && <span>⚠ layout: {layoutError}</span>}
-        {delta.removed.length > 0 && (
-          <span title={delta.removed.join("\n")}>−{delta.removed.length} removed</span>
+        {counts.removed > 0 && (
+          <span title={[...delta.removed, ...delta.removedEdges].join("\n")}>−{counts.removed} removed</span>
         )}
-        {delta.added.size + delta.modified.size > 0 && (
-          <span>+{delta.added.size} added · ~{delta.modified.size} modified</span>
+        {counts.added + counts.modified > 0 && (
+          <span>
+            +{counts.added} added · ~{counts.modified} modified
+          </span>
         )}
       </div>
       {selectedNode && (
@@ -1069,7 +1511,10 @@ export default function App() {
                   <ul className="edge-list">
                     {connections.slice(0, 60).map((c) => (
                       <li key={c.id}>
-                        <span className="mono">{c.out ? "→" : "←"}</span> {c.label} {c.out ? "to" : "from"} <b>{c.otherName}</b>
+                        <span className="mono">{c.selfLoop ? "↺" : c.out ? "→" : "←"}</span>{" "}
+                        {c.nearName && <span className="near">{c.nearName} </span>}
+                        {c.label}
+                        {c.selfLoop ? " (self)" : <>{c.out ? " to " : " from "}<b>{c.otherName}</b></>}
                       </li>
                     ))}
                     {connections.length > 60 && <li>… +{connections.length - 60} more</li>}

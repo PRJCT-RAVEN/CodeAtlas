@@ -4,7 +4,10 @@
 // — while a query was up.
 
 import { describe, it, expect } from "vitest";
-import { buildSearchIndex, searchMatches, hiddenMatchesOf } from "../src/App";
+import { groupingSkip } from "../src/ir/grouping";
+import { buildSearchIndex, searchMatches, hiddenMatchesOf, visibleMatchCount, drawnAsBox } from "../src/App";
+import { autoCollapse, DEFAULT_BUDGET } from "../src/ir/budget";
+import { buildDisplay } from "../src/layout/elk";
 import type { GraphIR } from "../src/ir/types";
 
 function schema(schemas: number, tables: number, columns: number): GraphIR {
@@ -22,7 +25,7 @@ function schema(schemas: number, tables: number, columns: number): GraphIR {
 
 describe("filter matching", () => {
   const ir = schema(2, 2, 2);
-  const index = buildSearchIndex(ir);
+  const index = buildSearchIndex(ir, groupingSkip(ir));
 
   it("matches name, kind or id, case-insensitively", () => {
     expect(searchMatches(index, "COL1")).toEqual(new Set(["column:s0.t0.c1", "column:s0.t1.c1", "column:s1.t0.c1", "column:s1.t1.c1"]));
@@ -47,9 +50,13 @@ describe("filter matching", () => {
     expect(own.lit).toEqual(new Set());
   });
 
-  it("never counts the root, which is not drawn", () => {
+  it("never counts the root, which is not drawn — and no longer matches it either", () => {
+    // The root is the canvas. It used to come back as a MATCH that `hiddenMatchesOf` then
+    // had to special-case away; now `searchMatches` leaves out everything that is never a
+    // display node (the root and grouping `file`s alike, via `groupingSkip`), so the count
+    // in the search box is the count of things the user can actually be shown.
     const { hidden } = hiddenMatchesOf(index, searchMatches(index, "db")!, new Set(["schema:s0"]));
-    expect(searchMatches(index, "db")!.has("database:db")).toBe(true);
+    expect(searchMatches(index, "db")!.has("database:db")).toBe(false);
     expect(hidden).toBe(0);
   });
 });
@@ -74,7 +81,7 @@ describe("filter cost on a big graph", () => {
     const oldMs = performance.now() - t0;
 
     const t1 = performance.now();
-    const index = buildSearchIndex(ir);
+    const index = buildSearchIndex(ir, groupingSkip(ir));
     let newHits = 0;
     for (const q of queries) {
       const m = searchMatches(index, q)!; // memoised on [ir, query] in App: the repeats reuse it
@@ -85,5 +92,53 @@ describe("filter cost on a big graph", () => {
     expect(newHits).toBe(oldHits); // same answers as the code it replaced
     console.log(`filter: ${queries.length} queries × ${REPEATS} passes over ${ir.nodes.length} nodes — was ${Math.round(oldMs)} ms, now ${Math.round(newMs)} ms`);
     expect(newMs * 2).toBeLessThan(oldMs);
+  });
+});
+
+// The two numbers in the search box have to be the same accounting: matches you can see,
+// and matches you cannot. They were not.
+describe("the search box's two numbers agree", () => {
+  it("a lit container is not counted as a match", () => {
+    const ir = schema(3, 30, 8);
+    const index = buildSearchIndex(ir, groupingSkip(ir));
+    const matched = searchMatches(index, "col")!;
+    // what the budget leaves on screen for this graph
+    const collapsed = new Set(autoCollapse(ir, new Set(), DEFAULT_BUDGET).collapse);
+    const shown = new Set(buildDisplay(ir, collapsed).visibleNodes.map((n) => n.id));
+    const { hidden, lit } = hiddenMatchesOf(index, matched, shown);
+    const onScreen = [...shown].filter((id) => matched.has(id)).length;
+    expect(lit.size, "containers are lit so the user can reach the hidden ones").toBeGreaterThan(0);
+    for (const id of lit) expect(matched.has(id), `${id} is lit, not a match`).toBe(false);
+    // the box shows `onScreen` and `+hidden`; together they must be every match, once each
+    expect(onScreen + hidden).toBe(matched.size);
+  });
+});
+
+describe("the two numbers in the search box", () => {
+  it("counts matches on screen, never the containers lit to lead to them", () => {
+    const ir = schema(3, 30, 8);
+    const index = buildSearchIndex(ir, groupingSkip(ir));
+    const matched = searchMatches(index, "col")!;
+    const collapsed = new Set(autoCollapse(ir, new Set(), DEFAULT_BUDGET).collapse);
+    const shown = buildDisplay(ir, collapsed).visibleNodes.map((n) => ({ id: n.id }));
+    const { hidden, lit } = hiddenMatchesOf(index, matched, new Set(shown.map((n) => n.id)));
+    const onScreen = visibleMatchCount(shown, matched, "col")!;
+    expect(lit.size).toBeGreaterThan(0);
+    expect(onScreen + hidden, "every match counted exactly once").toBe(matched.size);
+    // the mutation this exists for: counting undimmed nodes adds the lit containers
+    expect(onScreen + lit.size).toBeGreaterThan(onScreen);
+    expect(visibleMatchCount(shown, null, "col")).toBe(0);
+    expect(visibleMatchCount(shown, matched, "   ")).toBeNull(); // no query, no count
+  });
+
+  it("a collapsed container is still drawn as a box", () => {
+    // The rule six call sites share: the swatch, the MiniMap colour, `aria-expanded`, the
+    // click handler and the keyboard handler all have to agree that a collapsed container is
+    // a container — it is what Enter, Space and a click toggle.
+    expect(drawnAsBox({ isContainer: true, collapsed: false })).toBe(true);
+    expect(drawnAsBox({ isContainer: true, collapsed: true })).toBe(true);
+    expect(drawnAsBox({ isContainer: false, collapsed: true })).toBe(true);
+    expect(drawnAsBox({ isContainer: false, collapsed: false })).toBe(false);
+    expect(drawnAsBox({})).toBe(false);
   });
 });

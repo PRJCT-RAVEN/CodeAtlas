@@ -57,8 +57,38 @@ case "$REPO_LC" in
 esac
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-sed -e "s|__REPO__|$REPO|g" -e "s|__HOME__|$HOME|g" "$HERE/launchd/$LABEL.plist" >"$DEST"
+# Substitute LITERALLY, and XML-escape first. `sed` treats `&` in the replacement as "the
+# matched text", so a checkout under `~/A & B` used to install a plist naming
+# `~/A __REPO__ B` — a path that does not exist, which plutil -lint happily accepted and
+# launchd then failed to run forever. Any single-character sed delimiter can occur in a
+# real path too, and a raw `&` or `<` is not valid inside a plist <string> in the first
+# place. awk's gsub has the same `&` rule, so split on the needle instead of substituting.
+REPO="$REPO" HOMEDIR="$HOME" awk '
+  function put(line, needle, value,   i, out) {
+    while ((i = index(line, needle)) > 0) {
+      out = out substr(line, 1, i - 1) value
+      line = substr(line, i + length(needle))
+    }
+    return out line
+  }
+  # No backslashes: put() is a literal substitution, not gsub, so `&` is just a character
+  # here — and `"\&"` in an awk string literal is undefined by POSIX.
+  function xml(s) { return put(put(put(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;") }
+  BEGIN { repo = xml(ENVIRON["REPO"]); home = xml(ENVIRON["HOMEDIR"]) }
+  { print put(put($0, "__REPO__", repo), "__HOME__", home) }
+' "$HERE/launchd/$LABEL.plist" >"$DEST"
 plutil -lint "$DEST" >/dev/null
+# No placeholder may survive. This is the tell the old `sed` bug left behind: `&` in the
+# replacement expanded to the matched text, so `~/A & B/CodeAtlas` produced a plist naming
+# `~/A __REPO__ B/CodeAtlas` — a path that does not exist, which plutil -lint accepted and
+# launchd then failed to run forever. Checking the OUTPUT needs no external tool and
+# catches any partial substitution, not just that one.
+if grep -q '__REPO__\|__HOME__' "$DEST"; then
+  rm -f "$DEST"
+  echo "error: the generated plist still contains a __REPO__/__HOME__ placeholder —" >&2
+  echo "       the substitution did not complete. Not installing." >&2
+  exit 1
+fi
 # Reinstall cleanly if a previous copy is loaded (bootout is a no-op otherwise).
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN" "$DEST"

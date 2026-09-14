@@ -488,14 +488,17 @@ function isMain() {
 async function selfCheck(ir) {
   let validateDocument;
   try {
-    ({ validateDocument } = await import(resolve(dirname(fileURLToPath(import.meta.url)), "../schema/validate.mjs")));
+    // A URL, not a path: `import()` of a bare absolute path only works by accident on POSIX.
+    // On Windows the ESM loader threw "Received protocol 'c:'", so the self-check never ran
+    // there — and the output was still announced as "validated" (2026-09-12 Windows pass).
+    ({ validateDocument } = await import(new URL("../schema/validate.mjs", import.meta.url).href));
   } catch (e) {
     // the validator needs `npm ci` in schema/; do not imply we checked when we did not
     console.error(`schema2ir: could not self-check the output (${e?.message ?? e}); run \`node schema/validate.mjs\` yourself`);
-    return true;
+    return "unchecked";
   }
   const errors = validateDocument(ir);
-  if (!errors.length) return true;
+  if (!errors.length) return "valid";
   console.error(`schema2ir: BUG — the graph this build produced is not valid IR (${errors.length} problem(s)):`);
   for (const e of errors.slice(0, 10)) console.error(`  - ${e}`);
   if (errors.length > 10) console.error(`  … and ${errors.length - 10} more`);
@@ -514,10 +517,11 @@ if (isMain()) {
     process.exit(1);
   }
   const ir = catalogToIR(catalog, { name, indexes });
-  if (!(await selfCheck(ir))) process.exit(1);
+  const checked = await selfCheck(ir); // "valid" | "unchecked" | false
+  if (checked === false) process.exit(1);
   const text = JSON.stringify(ir, null, 2) + "\n";
   if (out) {
     writeFileSync(out, text);
-    console.error(`schema2ir: wrote ${out} (${ir.nodes.length} nodes, ${ir.edges.length} edges, validated)`);
+    console.error(`schema2ir: wrote ${out} (${ir.nodes.length} nodes, ${ir.edges.length} edges, ${checked === "valid" ? "validated" : "NOT self-checked"})`);
   } else process.stdout.write(text);
 }

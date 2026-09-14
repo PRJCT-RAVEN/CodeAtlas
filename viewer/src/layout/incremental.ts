@@ -12,9 +12,10 @@
 // full layout was expensive OR the view is large (INCREMENTAL_MIN_MS /
 // INCREMENTAL_MIN_NODES), so small views keep their routed quality. DENSE views
 // are NOT excluded: App applies the same rule to them and never consults
-// `mode.dense`, so a dense view past INCREMENTAL_MIN_NODES is spliced like any
-// other (measured: expanding a schema in the 40-chip overview of a 104k-node
-// file, 344 ms).
+// `mode.dense`, so a dense view past INCREMENTAL_MIN_NODES is spliced like any other.
+// (The 40-chip overview of a 104k-node file is NOT an example any more: 40 visible nodes
+// is below INCREMENTAL_MIN_VISIBLE, so it takes the full path — measured 193 ms.)
+// `dense`/`hairball` ARE recomputed on the spliced result — see the bottom of this file.
 
 import {
   buildDisplay,
@@ -27,6 +28,8 @@ import {
   type Point,
 } from "./elk";
 import type { GraphIR } from "../ir/types";
+import { isDense, isHairball } from "../ir/density";
+import { groupingSkip } from "../ir/grouping";
 
 /** Must match "elk.padding" in elk.ts and the container spacing there. */
 export const PAD = { top: 34, left: 20, bottom: 20, right: 20 };
@@ -78,7 +81,7 @@ function makeRoom(nodes: DisplayNode[], c: DisplayNode, oldW: number, oldH: numb
     (s) => s !== c && s.parentId === c.parentId && s.x >= c.x + oldW - 1 && s.y < c.y + c.height && s.y + s.height > c.y
   );
   if (rightSide.length > 0) {
-    const nearest = Math.min(...rightSide.map((s) => s.x));
+    const nearest = rightSide.reduce((m, s) => Math.min(m, s.x), Infinity); // reduce, not spread: see budget.ts
     const dx = c.x + c.width + GAP - nearest;
     if (dx > 0) {
       for (const s of rightSide) s.x += dx;
@@ -87,7 +90,7 @@ function makeRoom(nodes: DisplayNode[], c: DisplayNode, oldW: number, oldH: numb
   }
   const below = nodes.filter((s) => s !== c && s.parentId === c.parentId && s.y >= c.y + oldH - 1);
   if (below.length > 0) {
-    const nearest = Math.min(...below.map((s) => s.y));
+    const nearest = below.reduce((m, s) => Math.min(m, s.y), Infinity); // reduce, not spread: see budget.ts
     const dy = c.y + c.height + GAP - nearest;
     if (dy > 0) {
       for (const s of below) s.y += dy;
@@ -113,6 +116,8 @@ function fit(nodes: DisplayNode[], p: DisplayNode): { w: number; h: number } {
 }
 
 export interface IncrementalOptions {
+  /** The display-node predicate for the FULL graph (see LayoutOptions.skip). */
+  skip?: LayoutOptions["skip"];
   labelFor?: LayoutOptions["labelFor"];
 }
 
@@ -131,7 +136,9 @@ export async function incrementalToggle(
   const started = performance.now();
   const prevC = prev.nodes.find((n) => n.ir.id === toggled);
   if (!prevC) return null;
-  const model = buildDisplay(ir, collapsed, opts.labelFor);
+  // Derived ONCE, from the real graph, and used for both models below.
+  const skip = opts.skip ?? groupingSkip(ir);
+  const model = buildDisplay(ir, collapsed, opts.labelFor, skip);
   if (!model.visibleIds.has(toggled)) return null; // e.g. an ancestor is collapsed
 
   // --- new box + subtree for the toggled node ------------------------------
@@ -156,14 +163,28 @@ export async function incrementalToggle(
       ...ir,
       root: toggled,
       nodes: ir.nodes.filter((n) => inside.has(n.id)),
-      edges: ir.edges.filter((e) => inside.has(e.from) && inside.has(e.to)),
+      // `||`, not `&&`: an edge with ONE end inside is still this subtree's edge. It no
+      // longer CHANGES anything — the parent's `skip` is threaded in below, so nothing here
+      // re-derives a predicate from `mini`'s edge list, and mutating this back to `&&` leaves
+      // the whole suite green. It was the fix once (a file whose only imports left the
+      // subtree was an endpoint in the parent and not in the mini, so the mini elided it and
+      // the count check refused the splice, permanently, on exactly the views this path
+      // exists for); threading the predicate replaced that mechanism. Kept because the edge
+      // list is the honest one for a subtree and it costs nothing: `rep` returns undefined
+      // for an endpoint that is not in this graph, so `buildDisplay` drops the edge anyway.
+      edges: ir.edges.filter((e) => inside.has(e.from) || inside.has(e.to)),
     };
     // The mini graph makes its OWN tier/density decision, so a subtree spliced
     // into a dense parent view can come back orthogonally routed with inline
     // chips. Harmless (the parent's mode still decides how App draws them, and
     // the subtree is small by construction) but it is why the two halves of the
     // picture can look different until "Tidy".
-    const sub = await layoutGraph(mini, collapsed, { labelFor: opts.labelFor });
+    // The PARENT's predicate, not one re-derived from `mini`: `groupingSkip` reads the edge
+    // list, the node count and the root off the graph it is handed, and `mini` rewrites all
+    // three, so a node can be a display node in one model and not the other — and the count
+    // check below then refuses the splice, permanently, on exactly the views this path
+    // exists for. Measured: a 617-node tree disagreed on 30 nodes, a 323-node one on 40.
+    const sub = await layoutGraph(mini, collapsed, { labelFor: opts.labelFor, skip });
     let maxX = 0;
     let maxY = 0;
     for (const n of sub.nodes) {
@@ -238,5 +259,15 @@ export async function incrementalToggle(
   const expected = model.visibleIds;
   if (nodes.length !== expected.size || nodes.some((n) => !expected.has(n.ir.id))) return null;
 
-  return { nodes, edges, mode: { ...prev.mode, incremental: true }, layoutMs: performance.now() - started };
+  // `dense` and `hairball` are RECOMPUTED, not carried: they are the flags with a paint
+  // cliff behind them (2 SVG paths and a chip per edge on every pan), so an expand that
+  // makes a view newly dense must switch the economies on immediately rather than at the
+  // next "Tidy". Recomputing only `hairball` was not enough — it is `dense && …`, so a
+  // carried `dense: false` kept it false too, and one click on a 302-node view that the
+  // expand made dense drew 6,000 paths and 3,000 chips and took a pan from 220 ms to
+  // 3,048 ms. `tier`/`heavy` stay the parent's on purpose: they describe how this layout
+  // was PRODUCED, and the splice really was done the parent's way.
+  const dense = isDense(nodes.length, edges.length);
+  const mode = { ...prev.mode, dense, hairball: isHairball(nodes.length, edges.length), incremental: true };
+  return { nodes, edges, mode, layoutMs: performance.now() - started, rep: model.rep };
 }

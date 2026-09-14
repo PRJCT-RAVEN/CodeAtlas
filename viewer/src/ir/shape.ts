@@ -40,6 +40,16 @@ export function checkGraphShape(g: unknown): string | null {
   for (const [id, p] of parent) {
     if (p !== undefined && !ids.has(p)) return `node ${id} has unknown parent ${p}`;
     if (p === undefined && id !== g.root) return `node ${id} has no parent but is not the root`;
+    // The root must have NO parent — the one case the cycle walk below cannot see.
+    // It pre-marks the root "ok" so every chain can stop there, which also makes a cycle
+    // THROUGH the root invisible: `{root, parent: root}` walked clean, and everything
+    // downstream assumes chains terminate. `buildModel`'s `while (p && skip(p)) p = …`
+    // then spun forever on a three-node file (the tab wedged, unrecoverable without a
+    // reload), and a 2-cycle `{root, parent: child}` grew `depthOf`'s chain array until
+    // `RangeError: Invalid array length`. The schema validator rejects both; this guard
+    // exists precisely so the viewer does not depend on that, and said so while not
+    // doing it.
+    if (p !== undefined && id === g.root) return `root ${id} has a parent (${p})`;
   }
   for (const start of parent.keys()) {
     if (status.has(start)) continue;

@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFile, readFile, stat, truncate } from "node:fs/promises";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createHttpServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -20,8 +20,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 //
 // Resolution:
 // - allowed roots = this repo + each dir in $CODEATLAS_ROOTS (path-list delimiter: `:`, `;` on Windows)
-//   + `root=` (the root node's attrs.absRoot, sent by the client) IF it is an
-//   existing directory under $HOME;
+//   + `root=` (the root node's attrs.absRoot, sent by the client) when it names an
+//   existing directory on ANY drive that is neither a system location nor too broad to
+//   bound anything — see `systemPrefixes` and `tooBroadRoot`;
 // - a relative `file` resolves against each allowed root in that order; an
 //   absolute one is taken as-is;
 // - the candidate is realpath-resolved and must be a REGULAR FILE under an
@@ -30,10 +31,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // - `dry` validates/resolves without spawning an editor (tests/agents).
 //
 // Request gate: the endpoint shells out, so (a) Host must be a loopback name
-// (a DNS-rebinding page has a foreign Host), (b) Sec-Fetch-Site — stamped by
-// every supported browser — must be same-origin or none (address bar, curl),
-// (c) the TCP peer must be loopback (headers are just strings: a forwarded or
-// exposed port must not turn /open into remote code execution), (d) GET only.
+// (a DNS-rebinding page has a foreign Host), (b) Sec-Fetch-Site must be present
+// and be same-origin or none — every supported browser stamps it, "none" being a
+// typed-in address; a request carrying NO such header is refused, so curl and
+// scripts have to send `Sec-Fetch-Site: same-origin` explicitly, (c) the TCP peer
+// must be loopback (headers are just strings: a forwarded or exposed port must not
+// turn /open into remote code execution), (d) GET only.
 // The generic opener (`open` / `xdg-open` / `start`) is only ever handed files it
 // cannot EXECUTE — see `safeForGenericOpen` — and on macOS is forced to `open -t`.
 //
@@ -48,8 +51,39 @@ export const DEFAULT_ROOTS = [
 ];
 const HOME = homedir();
 
-function insideRoot(root: string, abs: string): boolean {
-  const rel = relative(root, abs);
+/**
+ * Every fence comparison folds case on macOS and Windows.
+ *
+ * APFS/HFS+ and NTFS are case-INsensitive by default, and macOS additionally stores names
+ * decomposed (NFD) while accepting the composed (NFC) spelling for the same directory.
+ * `realpathSync` normalises NEITHER — it hands back the spelling it was given — so two
+ * names for one directory stayed different strings and every fence here was one keystroke
+ * away from being bypassed: `root=/users` reached all of `$HOME` past `tooBroadRoot`,
+ * `/PRIVATE/etc/passwd` walked through the system deny-list, and (once case was fixed) an
+ * `attrs.absRoot` spelled NFC did both again on any machine whose home directory has a
+ * non-ASCII name.
+ *
+ * This is a comparison key ONLY: what is handed to the editor and echoed to the user is
+ * always the un-folded `realpathSync` result.
+ *
+ * Not a perfect model of the filesystem: on a case-SENSITIVE volume `proj/` and `PROJ/`
+ * are genuinely different directories, and folding makes the fence treat them as one — so
+ * it can widen the fence there as well as narrow it. Getting that exactly right needs a
+ * per-volume query (or device+inode comparison); the trade taken here is that
+ * case-insensitive is the default on both platforms this applies to, and being wrong in
+ * the OTHER direction is a bypass rather than an inconvenience.
+ */
+export function foldCase(p: string, os: string = platform()): string {
+  return os === "darwin" || os === "win32" ? p.normalize("NFC").toLowerCase() : p;
+}
+
+/** Same path, by the rules of the platform's filesystem. */
+function samePath(a: string, b: string, os: string = platform()): boolean {
+  return foldCase(a, os) === foldCase(b, os);
+}
+
+function insideRoot(root: string, abs: string, os: string = platform()): boolean {
+  const rel = relative(foldCase(root, os), foldCase(abs, os));
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
@@ -94,6 +128,22 @@ function isFile(p: string): boolean {
  * refuses runnable types.
  */
 export function systemPrefixes(os: string = platform(), home = HOME): string[] {
+  // Not a system location, but nothing a DIAGRAM ever has a legitimate loc in, and the
+  // worst thing a shared graph could talk someone into opening. `tooBroadRoot` stops a
+  // graph claiming all of $HOME; this stops one claiming `~/.ssh` and pointing at
+  // `id_rsa`. Deliberately short and deliberately not exhaustive — it raises the floor,
+  // it is not the boundary. (The boundary is: the file must live inside the root the
+  // graph names, and the user has to click.)
+  // realpath'd: `resolveLocFile` realpaths the CANDIDATE before checking it against this
+  // list, so a $HOME that is itself a symlink made every home-relative entry here — these
+  // and macOS's ~/Library — silently unmatchable.
+  //
+  const h = real(home) ?? home;
+  // Compose with the separator of the platform being DESCRIBED, not the one running this
+  // code: `node:path`'s bare `join` is host-bound, so on a Windows host the darwin list
+  // came out as `\fake-home\dev-user\Library` (2026-09-12 Windows pass).
+  const joinFor = (os === "win32" ? win32 : posix).join;
+  const secrets = [...[".ssh", ".aws", ".gnupg", ".kube", ".docker", ".claude"].map((d) => joinFor(h, d)), joinFor(h, ".netrc"), joinFor(h, ".npmrc")];
   if (os === "win32") {
     const sysDrive = process.env.SystemDrive ?? "C:";
     return [
@@ -101,29 +151,79 @@ export function systemPrefixes(os: string = platform(), home = HOME): string[] {
       `${sysDrive}\\Program Files`,
       `${sysDrive}\\Program Files (x86)`,
       `${sysDrive}\\ProgramData`,
-      join(home, "AppData"),
+      joinFor(h, "AppData"),
+      ...secrets,
     ];
   }
   // OS binaries, config and device trees. Deliberately NOT /var: the sensitive parts
   // of it are unreadable to a normal user anyway, and on macOS $TMPDIR lives under
   // /private/var, so denying it would refuse ordinary scratch directories.
-  const unix = ["/etc", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys", "/private/etc"];
+  const unix = ["/etc", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys", "/private/etc", ...secrets];
   // macOS: the system volume and the machine-wide app-support tree, plus the user's
   // own ~/Library (keychains, app data, browser profiles — not source code)
-  return os === "darwin" ? [...unix, "/System", "/Library", join(home, "Library")] : unix;
+  return os === "darwin" ? [...unix, "/System", "/Library", joinFor(h, "Library")] : unix;
+}
+
+/**
+ * Subtrees of a denied directory that hold CODE, not secrets, and may be diagrammed.
+ *
+ * `~/.claude` has to be denied as a directory: enumerating the secrets inside it was tried
+ * and left `history.jsonl` (every prompt the user has typed), `settings.local.json` and
+ * `projects/**\/*.jsonl` (full transcripts) reachable, because that list is open-ended and
+ * grows with the product. This one is closed: the four places Claude Code keeps
+ * user-authored source. The documented plugin install puts this very checkout under
+ * `~/.claude/plugins/…`, so without the exemption "Open in editor" was off for the
+ * plugin's own code and for the user's own skills and agents.
+ */
+export function deniedExceptions(home = HOME, os: string = platform()): string[] {
+  const h = real(home) ?? home;
+  const joinFor = (os === "win32" ? win32 : posix).join;
+  return ["plugins", "skills", "agents", "commands"].map((d) => joinFor(h, ".claude", d));
 }
 
 /** True when `abs` is a system location no diagram has any business opening. */
 export function isSystemPath(abs: string, os: string = platform(), home = HOME): boolean {
-  return systemPrefixes(os, home).some((p) => abs === p || insideRoot(p, abs));
+  // The exemption short-circuits the WHOLE list, not just the `~/.claude` entry that
+  // motivates it. Sound today — no other denied prefix can contain `~/.claude/<sub>` —
+  // but it is wider than it reads, so keep `deniedExceptions` to paths under a denied
+  // directory and nowhere else.
+  if (deniedExceptions(home, os).some((p) => insideRoot(p, abs, os))) return false;
+  return systemPrefixes(os, home).some((p) => samePath(abs, p, os) || insideRoot(p, abs, os));
+}
+
+/** Directories that HOLD projects rather than being one: naming one as a root bounds nothing. */
+const MOUNT_PARENTS = ["/Volumes", "/mnt", "/media", "/private", "/srv", "/opt"];
+
+/**
+ * A client-supplied root that would not bound anything.
+ *
+ * The deny-list above says where a root may not POINT; this says how specific it has to
+ * be. What actually fences `/open` is "the file must live inside the root the graph
+ * names", and `root=/` — or `root=$HOME`, or any other ancestor of it — makes that
+ * vacuous: a shared diagram could then resolve every file on the machine the deny-list
+ * does not happen to cover, and `CODEATLAS_OPEN_HOME=1` would stop being a decision the
+ * user makes. A root must name a PROJECT, so it has to be at least one directory below
+ * the filesystem (or drive) root and must not contain the home directory.
+ *
+ * `$CODEATLAS_ROOTS` and this repo are deliberately exempt: those are configured by the
+ * person running the viewer, not asserted by whatever graph is on screen.
+ */
+export function tooBroadRoot(abs: string, home = HOME, os: string = platform()): boolean {
+  if (samePath(abs, dirname(abs), os)) return true; // "/" or a bare drive root ("C:\")
+  // `/Volumes` is one directory below `/`, so "at least one level down" let it through —
+  // and it contains every mounted disk, share and DMG on the machine.
+  if (MOUNT_PARENTS.some((p) => samePath(abs, p, os))) return true;
+  const h = real(home) ?? home;
+  return samePath(abs, h, os) || insideRoot(abs, h, os); // $HOME itself, or an ancestor of it (/Users, /home, C:\Users)
 }
 
 /**
  * Roots a loc may resolve against / must lie under.
  *
  * A client-supplied `root=` (the graph's `attrs.absRoot`) is accepted anywhere it
- * names a real directory that is not itself a system location — so a project on any
- * drive works with no configuration. `$CODEATLAS_ROOTS` still adds roots explicitly.
+ * names a real directory that is neither a system location nor too broad to bound
+ * anything — so a project on any drive works with no configuration. `$CODEATLAS_ROOTS`
+ * still adds roots explicitly.
  */
 export function allowedRoots(
   root: string | null,
@@ -134,7 +234,7 @@ export function allowedRoots(
   const out = roots.map(real).filter((r): r is string => !!r);
   if (root && isAbsolute(root)) {
     const r = real(resolve(root));
-    if (r && isDir(r) && !isSystemPath(r, os, home)) out.unshift(r);
+    if (r && isDir(r) && !isSystemPath(r, os, home) && !tooBroadRoot(r, home, os)) out.unshift(r);
   }
   return out;
 }
@@ -160,7 +260,7 @@ export function resolveLocFile(
     // realpath first, THEN the deny-list: a symlink inside an allowed root that
     // points at /etc/passwd must not get through on the strength of its own path
     if (isSystemPath(abs, os, home)) continue;
-    if (fences.some((f) => insideRoot(f, abs))) return abs;
+    if (fences.some((f) => insideRoot(f, abs, os))) return abs;
   }
   return null;
 }
@@ -357,18 +457,19 @@ const openInEditor = (): Plugin => ({
       const lineRaw = url.searchParams.get("line") ?? "1";
       if (!/^\d{1,8}$/.test(lineRaw) || Number(lineRaw) < 1) {
         res.statusCode = 400;
-        res.end(`line must be a positive integer (≤ 10000000), got: ${lineRaw}`);
+        res.end(`line must be a positive integer (at most 8 digits), got: ${lineRaw}`);
         return;
       }
       const line = String(Number(lineRaw));
       const dry = url.searchParams.has("dry");
       const abs = resolveLocFile(file, root);
       if (!abs) {
-        // Name the roots that were tried and the way out. A client-supplied
-        // `root=` is only honoured under $HOME (a graph could otherwise point it
-        // at "/" and open anything), so a project on another drive or outside the
-        // home directory needs CODEATLAS_ROOTS — which nobody could guess from
-        // "cannot resolve".
+        // Name the roots that were TRIED and the way out — "cannot resolve" alone
+        // tells nobody whether the file is missing or the fence turned it down. A
+        // client-supplied `root=` is honoured on any drive, but only when it names
+        // something specific enough to bound the request (see tooBroadRoot): a graph
+        // rooted at "/" or at $HOME contributes no root at all, and the list below
+        // is then the giveaway, since it will not mention it.
         res.statusCode = 404;
         res.end(
           `cannot resolve to an existing file: ${file}\n` +
@@ -507,6 +608,11 @@ const userTheme = (file: string | null): Plugin => ({
         return;
       }
       res.setHeader("cache-control", "no-store");
+      // No theme file is the NORMAL case, so answer with an empty stylesheet rather than a
+      // 404: index.html links this unconditionally, and a 404 on a <link rel=stylesheet>
+      // is a red console error on every single page load — noise that buries the errors
+      // that matter. The hint still reaches anyone who looks at the file itself.
+      const empty = `/* CodeAtlas: no user theme installed.\n   Create ${file ?? "~/.codeatlas/theme.css"} to override any token — template: docs/theme.example.css */\n`;
       (file ? readFile(file) : Promise.reject(new Error("no theme file"))).then(
         (buf) => {
           res.setHeader("content-type", "text/css");
@@ -514,9 +620,9 @@ const userTheme = (file: string | null): Plugin => ({
           res.end(req.method === "HEAD" ? undefined : buf);
         },
         () => {
-          res.setHeader("content-type", "text/plain");
-          res.statusCode = 404;
-          res.end("no user theme (create ~/.codeatlas/theme.css — see docs/theme.example.css)");
+          res.setHeader("content-type", "text/css");
+          res.statusCode = 200;
+          res.end(req.method === "HEAD" ? undefined : empty);
         }
       );
     };

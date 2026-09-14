@@ -14,9 +14,24 @@ import { readFileSync } from "node:fs";
 const NODE_FIELDS = ["kind", "name", "parent", "attrs"];
 const EDGE_FIELDS = ["kind", "from", "to", "count"];
 
+/**
+ * An edge's multiplicity — the number the viewer's chip shows as `×N`. `count` may stand
+ * alone on a conceptual edge and `locs` alone on a structural one (the honesty rule
+ * mandates `locs`, never `count`), so comparing the raw `count` field reported "(no
+ * changes)" for an edge whose call sites went from three to seven while the viewer drew
+ * `calls ×7` in amber. Same derivation as `edgeCount` in the viewer, inlined because this
+ * tool has no dependencies. Absent means "the author said nothing", which is how it prints.
+ */
+function multiplicity(e) {
+  if (typeof e.count === "number") return e.count;
+  if (Array.isArray(e.locs)) return e.locs.length;
+  return undefined;
+}
+const withMultiplicity = (e) => ({ ...e, count: multiplicity(e) });
+
 export function diffIr(oldIr, newIr) {
   const nodes = diffItems(items(oldIr, "nodes"), items(newIr, "nodes"), NODE_FIELDS);
-  const edges = diffItems(items(oldIr, "edges"), items(newIr, "edges"), EDGE_FIELDS);
+  const edges = diffItems(items(oldIr, "edges").map(withMultiplicity), items(newIr, "edges").map(withMultiplicity), EDGE_FIELDS);
   const document = {};
   for (const f of ["irVersion", "root", "title", "description"])
     if (!deepEqual(oldIr?.[f], newIr?.[f])) document[f] = { from: oldIr?.[f], to: newIr?.[f] };

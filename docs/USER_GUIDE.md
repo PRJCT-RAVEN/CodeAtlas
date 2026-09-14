@@ -35,7 +35,7 @@ To try a checkout without installing: `claude --plugin-dir /path/to/codeatlas`.
 
 ### Controlling the viewer by hand
 
-`/codeatlas:viewer start|stop|restart|status|open|paths`, or directly:
+`/codeatlas:viewer start|stop|restart|status|open|paths|publish`, or directly:
 
 ```sh
 bin/codeatlas-viewer start     # installs deps on first run, starts vite on :5173, prints paths
@@ -43,6 +43,10 @@ bin/codeatlas-viewer status    # up/down + pid (exit 1 when down)
 bin/codeatlas-viewer restart   # stop + start — how a plugin update reaches a running viewer
 bin/codeatlas-viewer stop
 bin/codeatlas-viewer paths     # PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG / STOP
+bin/codeatlas-viewer publish <draft> [--to <name>]
+                               # validate a staged graph (a path, or <name> for LIVE_DIR/<name>.json)
+                               # and rename it over LIVE_DIR/graph.json in one step; an invalid
+                               # draft exits 1 with the errors and nothing changes on screen
 ```
 
 On Windows use `bin\codeatlas-viewer.cmd` (or the shell shim under Git Bash / WSL).
@@ -83,7 +87,7 @@ machine has no IPv6; IPv4 keeps serving.
 | `function` | cream "process" pill (leaf) |
 | `property` | pastel rectangle (leaf) |
 | `package` | the root — it *is* the canvas, never drawn |
-| `file` | hidden when it only groups other nodes; a leaf `file` is drawn as a store (amber rails) |
+| `file` | elided when it ONLY groups other nodes — that is, it has children, takes part in no edge, carries no `collapsedByDefault`, sits under another container rather than directly under the root, and the graph is small enough not to need budgeting. Otherwise it is drawn as a container, so `imports` between files are drawn between FILE boxes. A leaf `file` is drawn as a store (amber rails) |
 
 Any other kind (conceptual views use `step`, `store`, `queue`, `screen`, database views use
 `schema`, `table`, `column`, …) gets a shape from its archetype (process / store /
@@ -222,13 +226,18 @@ prints `LIVE_DIR`) as `graph.json`.
 
 The viewer lays out only what is *expanded*, so file size barely matters — 100k nodes /
 25 MB is tested. On first load it collapses the deepest levels (columns, then tables, …)
-until at most 600 nodes and 800 edges are visible, and reports "N auto-collapsed ·
-showing X/Y" in the status bar; click a container to expand it, and use the filter box to
-find names inside collapsed containers ("+N hidden"). `?budget=N` (or `?budget=N,E`) on the
+until the view is roughly within 600 nodes and 800 edges, and reports "N auto-collapsed ·
+showing X/Y" in the status bar. Roughly, on purpose: it will sit a little OVER a cap rather
+than fold the last container standing and leave you one chip — a 600-table single-schema
+import lands on 601 nodes and ~1,190 edges, not on 1. Click a container to expand it, and
+use the filter box to find names inside collapsed containers ("+N hidden"). `?budget=N` (or `?budget=N,E`) on the
 viewer URL changes the limits.
 
 Views with more than about three edges per node draw their edges faint until you select a
-node, which then lights its own. If your own expanding takes the view past about 800 visible
+node, which then lights its own. Past about 800 of them the faint cloud is not drawn at all
+— at that density it is mush rather than texture, and each edge costs two SVG paths on every
+pan — so the status bar says "N of M edges hidden · select a node to trace them" and the
+details panel lists the selected node's edges with their counts. If your own expanding takes the view past about 800 visible
 nodes the status bar says so and offers **collapse to fit**, which re-applies the budget —
 the viewer warns rather than undoing the click you just made. Large layouts drop to faster ELK settings automatically
 and say so in the status bar; a collapse/expand in an expensive view relays out only that

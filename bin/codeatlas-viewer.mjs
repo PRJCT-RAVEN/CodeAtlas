@@ -11,6 +11,11 @@
 //   codeatlas-viewer open      open the viewer in the default browser (starts it if needed)
 //   codeatlas-viewer paths     print PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG
 //   codeatlas-viewer install   only install viewer + validator dependencies
+//   codeatlas-viewer publish <draft> [--to <name>]
+//                              validate a draft graph (a path, or <name> for LIVE_DIR/<name>.json)
+//                              and rename it over LIVE_DIR/graph.json — or LIVE_DIR/<name>.json
+//                              with --to — in one step; an invalid draft is left where it is
+//                              and nothing is published (exit 1)
 //
 // Graphs live in a DATA dir OUTSIDE the plugin so an update never deletes them:
 //   CODEATLAS_DATA      default ~/.codeatlas   live/ (graphs), theme.css, viewer.log, viewer.pid
@@ -20,7 +25,7 @@
 // Requires Node.js >= 20 and npm.
 
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -469,11 +474,15 @@ async function waitForOtherStart() {
   return false;
 }
 
-async function start() {
-  // Both dirs 0700, every time. These hold the user's graphs — which carry absolute
-  // paths and the structure of private projects — and `mode` on mkdirSync only
-  // applies when the directory is CREATED, so a dir made by an older build (or with
-  // a permissive umask) kept its 0755 forever. chmod is a no-op on Windows.
+/**
+ * Both dirs 0700, every time. These hold the user's graphs — which carry absolute
+ * paths and the structure of private projects — and `mode` on mkdirSync only
+ * applies when the directory is CREATED, so a dir made by an older build (or with
+ * a permissive umask) kept its 0755 forever. chmod is a no-op on Windows.
+ * Shared by `start` and `publish`: a publish before the first start must not create
+ * the live dir with the umask's mode either.
+ */
+function ensureDataDirs() {
   mkdirSync(DATA, { recursive: true, mode: 0o700 });
   mkdirSync(LIVE, { recursive: true, mode: 0o700 });
   for (const d of [DATA, LIVE]) {
@@ -483,6 +492,10 @@ async function start() {
       /* not ours to change, or a filesystem without modes */
     }
   }
+}
+
+async function start() {
+  ensureDataDirs();
   if (await up()) return reportUp(true);
   // Two attempts: take the lock, or wait for whoever holds it and try once more if that
   // start ended without a viewer (it was killed, or it failed).
@@ -670,6 +683,98 @@ async function openBrowser() {
 }
 
 /**
+ * Validate a draft with the plugin's own validator, then rename it over the live graph.
+ *
+ *   codeatlas-viewer publish <draft> [--to <name>]
+ *
+ * The skill used to end with `mv <draft> <LIVE_DIR>/graph.json`, and in plugin mode that
+ * line can never run: the live dir is outside every project, and Claude Code's file-move
+ * rule only allows `mv` inside the session's working directories ("may only move files
+ * to/from the allowed working directories") — a hard block, not a prompt. The session
+ * then improvised; on the 2026-09-12 Windows pass it overwrote graph.json with the Write
+ * tool, which works but is not the stage → validate → rename contract. This subcommand
+ * IS that contract, behind the one permission users already grant the launcher: nothing
+ * reaches the live file unless the validator said VALID, and the last step is a rename
+ * inside the live dir, so the viewer's 1 s poll never sees a half-written file.
+ *
+ * <draft> is a path, or a bare name meaning <LIVE_DIR>/<name>.json (with or without the
+ * extension). --to picks the live file name (default `graph`; the viewer's `?graph=<name>`
+ * reads <name>.json), restricted to the names the viewer will serve. A draft on another
+ * volume is copied to a temp sibling first so the final step is still a rename.
+ * Exit 0 published · 1 the draft is missing, not JSON or not valid IR (left in place,
+ * nothing published) · 2 usage, or the validator's own dependency missing.
+ */
+export function parsePublishArgs(argv) {
+  let to = "graph";
+  const drafts = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--to") {
+      if (i + 1 >= argv.length) return { error: "--to needs a name" };
+      to = argv[++i];
+    } else if (a.startsWith("--to=")) to = a.slice("--to=".length);
+    else if (a.startsWith("-")) return { error: `unknown flag: ${a}` };
+    else drafts.push(a);
+  }
+  if (drafts.length !== 1) return { error: "usage: codeatlas-viewer publish <draft.json | name> [--to <name>]" };
+  const name = to.replace(/\.json$/, "");
+  // the same shape viewer/vite.config.ts `liveFilePath` serves; anything else would publish a file nothing can read
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return { error: `--to must be a plain graph name (letters, digits, _ and -), got "${to}"` };
+  return { draft: drafts[0], name };
+}
+
+async function publish(argv) {
+  const parsed = parsePublishArgs(argv);
+  if (parsed.error) die(parsed.error, 2);
+  const { name } = parsed;
+  const draft = existsSync(parsed.draft) ? resolve(parsed.draft) : join(LIVE, parsed.draft.replace(/\.json$/, "") + ".json");
+  let isFile = false;
+  try {
+    isFile = statSync(draft).isFile();
+  } catch {
+    /* missing */
+  }
+  if (!isFile) die(`no such draft: ${parsed.draft} (looked for ${draft})`);
+  const target = join(LIVE, `${name}.json`);
+  if (resolve(draft).toLowerCase() === resolve(target).toLowerCase()) die(`${draft} already is the live file; stage the draft under another name`, 2);
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(draft, "utf8"));
+  } catch (e) {
+    die(`${draft} is not JSON (${e.message}) — left in place, nothing published`);
+  }
+  let validateDocument;
+  try {
+    // a URL, never a bare absolute path: the ESM loader rejects `C:\…` on Windows
+    ({ validateDocument } = await import(new URL("../schema/validate.mjs", import.meta.url).href));
+  } catch (e) {
+    die(e?.message ?? String(e), 2); // validate.mjs already names the install command when ajv is missing
+  }
+  const errors = validateDocument(doc);
+  if (errors.length) {
+    console.error(`codeatlas-viewer: ${draft} is not valid IR (${errors.length} problem(s)):`);
+    for (const e of errors.slice(0, 10)) console.error(`  - ${e}`);
+    if (errors.length > 10) console.error(`  … and ${errors.length - 10} more`);
+    die("draft left in place, nothing published");
+  }
+  ensureDataDirs();
+  try {
+    renameSync(draft, target);
+  } catch (e) {
+    if (e.code !== "EXDEV") throw e;
+    // another volume: land it next to the target first so the swap itself is still atomic
+    const tmp = join(LIVE, `.${name}.publishing-${process.pid}.json`);
+    copyFileSync(draft, tmp);
+    renameSync(tmp, target);
+    unlinkSync(draft);
+  }
+  const nodes = Array.isArray(doc.nodes) ? doc.nodes.length : 0;
+  const edges = Array.isArray(doc.edges) ? doc.edges.length : 0;
+  console.log(`published ${target} (${nodes} nodes, ${edges} edges, VALID) from ${draft}`);
+  console.log(`URL=${URL_}${name === "graph" ? "" : `?graph=${name}`}`);
+}
+
+/**
  * Are we the script that was run (vs. imported by a test)?
  *
  * Compare REALPATHS: Node resolves symlinks when it builds `import.meta.url`, so
@@ -713,11 +818,21 @@ if (isMain) switch (cmd) {
     }
     console.log("dependencies installed");
     break;
+  case "publish":
+    await publish(process.argv.slice(3));
+    break;
   case "-h":
   case "--help":
   case "help":
-    console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 19).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    // The whole header block, however long it grows: comment lines until the first that is
+    // not one, rather than a hardcoded line count that silently dropped the last line
+    // ("Requires Node.js >= 20 and npm.") as soon as the block gained an entry.
+    {
+      const lines = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1); // past the shebang
+      const end = lines.findIndex((l) => !l.startsWith("//"));
+      console.log(lines.slice(0, end === -1 ? lines.length : end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    }
     break;
   default:
-    die(`unknown command: ${cmd} (start|stop|restart|status|open|paths|install)`);
+    die(`unknown command: ${cmd} (start|stop|restart|status|open|paths|install|publish)`);
 }

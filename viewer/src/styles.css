@@ -436,6 +436,10 @@ body,
   border: 1px dashed var(--edge-neutral);
   color: var(--ink);
 }
+.edge-chip.delta-modified {
+  border-color: var(--delta-modified);
+  border-width: 2px;
+}
 .edge-chip.delta-added {
   border-color: var(--delta-added);
 }
@@ -633,4 +637,10 @@ body,
 }
 .status .over-budget button:hover {
   background: var(--panel-3);
+}
+
+/* Which of MY nodes an edge leaves, when a container is selected and its whole subtree is
+   lit: without it every row of a long list reads identically. */
+.edge-list .near {
+  color: var(--ink-3);
 }

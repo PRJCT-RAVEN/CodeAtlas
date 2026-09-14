@@ -40,16 +40,25 @@ Question (if invoked with arguments): $ARGUMENTS
    after edits use `codeatlas:graph-refresh` (Haiku) with the current view path. You design
    the view and you validate their output before publishing.
 3. **Stage → validate → publish** (never write an unvalidated draft to the live file):
-   write `<LIVE_DIR>/<name>.json` (the LIVE_DIR from step 1) →
-   `node "${CLAUDE_PLUGIN_ROOT}/schema/validate.mjs" "<LIVE_DIR>/<name>.json"` →
-   on `VALID`, `mv` it to `<LIVE_DIR>/graph.json`. The validator checks the JSON
-   Schema plus: unique ids, one root, acyclic parent chains ending at the root, every
-   `parent` mirrored by a `contains` edge (and vice versa), edge endpoints exist, edge
-   `id === "e:<kind>:<from>-><to>"`, `count === locs.length` when both present, nodes and
-   edges sorted by id in UTF-8 byte order. Fix everything before telling the user it's done.
-   Exit 0 valid, 1 invalid, 2 a usage error or a missing `ajv` (it names the install
-   command). Each error quotes the offending value, so read the message rather than
-   guessing which node it means.
+   write `<LIVE_DIR>/<name>.json` (the LIVE_DIR from step 1), then
+   `"${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer" publish <name>` — it runs the validator
+   and, only on VALID, renames the draft over `<LIVE_DIR>/graph.json` in one step (exit 0,
+   prints the URL). An invalid draft is left where it is with the errors listed and nothing
+   is published (exit 1); fix it and publish again. `publish <path>` takes a draft from
+   anywhere, and `--to <other>` publishes it as `<LIVE_DIR>/<other>.json` for a
+   `?graph=<other>` preview instead of the live view. **Never `mv`/`Move-Item` the draft
+   yourself and never write `graph.json` directly**: the live dir is outside the project, so
+   Claude Code refuses `mv` there outright, and a direct write skips the validation the
+   viewer relies on.
+   To check a draft without publishing:
+   `node "${CLAUDE_PLUGIN_ROOT}/schema/validate.mjs" "<LIVE_DIR>/<name>.json"`. The
+   validator checks the JSON Schema plus: unique ids, one root, acyclic parent chains ending
+   at the root, every `parent` mirrored by a `contains` edge (and vice versa), edge
+   endpoints exist, edge `id === "e:<kind>:<from>-><to>"`, `count === locs.length` when
+   both present, nodes and edges sorted by id in UTF-8 byte order. Fix everything before
+   telling the user it's done. Exit 0 valid, 1 invalid, 2 a usage error or a missing `ajv`
+   (it names the install command). Each error quotes the offending value, so read the
+   message rather than guessing which node it means.
 4. **Iterate conversationally** — each refinement is a new graph.json. Keep ids stable: the
    viewer highlights what changed (green added, amber modified) and keeps positions, so a
    refresh moves as little as possible. For "what changed" views, reuse the same root id.
@@ -72,8 +81,11 @@ Question (if invoked with arguments): $ARGUMENTS
   Windows included. A RELATIVE `loc.file` with a backslash is rejected; an absolute Windows
   path (`C:\src\App.tsx`) or a UNC path is fine.
 - Exactly one node (the root) omits `parent`; it is hidden (root = canvas). Hierarchy via
-  `parent` + mirrored `contains` edges renders as nesting. A `file` node is hidden only
-  when it has children; a leaf `file` draws as a store.
+  `parent` + mirrored `contains` edges renders as nesting. A `file` node with children is
+  elided as a redundant grouping level — but ONLY when it takes part in no edge, carries no
+  `collapsedByDefault`, sits under another container (not directly under the root) and the
+  graph is small enough not to need budgeting. So `imports` between files are drawn between
+  FILE containers, not lost; a leaf `file` draws as a store.
 - Sort nodes and edges by id in UTF-8 BYTE order — in node
   `arr.sort((a, b) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id)))`, not `<`.
 - `annotations.<id>` renders: `summary` (details panel; on the root → description),

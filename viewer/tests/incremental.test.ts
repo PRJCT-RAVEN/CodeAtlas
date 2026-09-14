@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { incrementalEligible, INCREMENTAL_MIN_MS, INCREMENTAL_MIN_NODES, INCREMENTAL_MIN_VISIBLE } from "../src/App";
 import { layoutGraph, type DisplayNode } from "../src/layout/elk";
 import { childIndex, incrementalToggle, GAP } from "../src/layout/incremental";
 import type { GraphIR } from "../src/ir/types";
-import { db } from "./budget.test";
+import { db } from "./fixtures";
 
 type Box = { x: number; y: number; w: number; h: number };
 function absBoxes(nodes: DisplayNode[]): Map<string, Box> {
@@ -192,4 +193,146 @@ describe("stale base (a second toggle landed while a pass was pending)", () => {
     c1.delete("table:s1.t7");
     expect(await incrementalToggle(g, c1, "table:s1.t7", layout0)).not.toBeNull();
   });
+});
+
+// An expand that makes a view NEWLY dense must switch the paint economies on immediately,
+// not at the next "Tidy". `hairball = dense && …`, so recomputing only `hairball` while
+// carrying `dense` left both false: one click on a 302-node view drew 6,000 SVG paths and
+// 3,000 chips and took a pan from 220 ms to 3,048 ms.
+//
+// This test exists because mutating BOTH recomputations out of `incremental.ts` left the
+// whole suite green — no fixture could make an expand cross DENSE_RATIO, since every
+// `db()` graph sits at exactly 2.0 edges per node.
+describe("a splice recomputes the paint economies", () => {
+  /** `dir:a` (collapsed) and `dir:b`, with `refs` cross edges per leaf of a. */
+  function crossing(leaves: number, refs: number): GraphIR {
+    const nodes: GraphIR["nodes"] = [
+      { id: "dir:.", kind: "dir", name: "r" },
+      { id: "dir:a", kind: "dir", name: "a", parent: "dir:." },
+      { id: "dir:b", kind: "dir", name: "b", parent: "dir:." },
+    ];
+    const edges: GraphIR["edges"] = [];
+    const add = (k: string, f: string, t: string) => edges.push({ id: `e:${k}:${f}->${t}`, kind: k, from: f, to: t });
+    add("contains", "dir:.", "dir:a");
+    add("contains", "dir:.", "dir:b");
+    const A: string[] = [];
+    const B: string[] = [];
+    for (const [d, arr] of [["dir:a", A], ["dir:b", B]] as const)
+      for (let i = 0; i < leaves; i++) {
+        const id = `doc:${d.slice(4)}/f${String(i).padStart(4, "0")}`;
+        nodes.push({ id, kind: "doc", name: `f${i}`, parent: d });
+        add("contains", d, id);
+        arr.push(id);
+      }
+    for (let i = 0; i < A.length; i++)
+      for (let r = 1; r <= refs; r++) add("references", A[i], B[(i * 7919 + r * 104729) % B.length]);
+    const cmp = (a: { id: string }, b: { id: string }) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id));
+    nodes.sort(cmp);
+    edges.sort(cmp);
+    return { irVersion: "0.2", generator: { tool: "t", version: "0", commit: null }, root: "dir:.", nodes, edges } as GraphIR;
+  }
+
+  it("flips dense AND hairball on, and back off on collapse", async () => {
+    const g = crossing(150, 10);
+    const collapsed = new Set(["dir:a"]);
+    const before = await layoutGraph(g, collapsed);
+    expect(before.mode.dense, "not dense while `a` is a chip").toBe(false);
+    expect(before.mode.hairball).toBe(false);
+
+    const expanded = new Set<string>();
+    const spliced = await incrementalToggle(g, expanded, "dir:a", before, {});
+    expect(spliced, "the splice must apply").not.toBeNull();
+    const full = await layoutGraph(g, expanded);
+    expect(full.mode.dense, "the expanded view really is dense").toBe(true);
+    expect(full.mode.hairball).toBe(true);
+    expect(spliced!.mode.dense, "the splice must agree with a full pass").toBe(true);
+    expect(spliced!.mode.hairball).toBe(true);
+
+    // …and collapsing again turns them back off
+    const back = await incrementalToggle(g, collapsed, "dir:a", spliced!, {});
+    expect(back, "the collapse must apply").not.toBeNull();
+    expect(back!.mode.dense).toBe(false);
+    expect(back!.mode.hairball).toBe(false);
+  });
+});
+
+// Pattern (e): the incremental path's own gate shipped through two rounds of fixes with no
+// coverage at all, because the decision lived inline in a `useEffect`. It is a pure
+// function now, and these are the three thresholds it is made of.
+describe("choosing the incremental path", () => {
+  const ready = true;
+  const big = { fullMs: 1000, visible: 500 };
+  it("takes it when the last full pass was expensive AND the view is worth approximating", () => {
+    expect(incrementalEligible(big, ready, null)).toBe(true);
+    // slow but small: a full pass over 18 nodes is cheap by definition, and the
+    // approximation costs routed edges. One cold measurement used to downgrade every
+    // later toggle of that diagram until "Tidy".
+    expect(incrementalEligible({ fullMs: 1000, visible: 18 }, ready, null)).toBe(false);
+    expect(incrementalEligible({ fullMs: 1000, visible: INCREMENTAL_MIN_VISIBLE - 1 }, ready, null)).toBe(false);
+    expect(incrementalEligible({ fullMs: 1000, visible: INCREMENTAL_MIN_VISIBLE }, ready, null)).toBe(true);
+  });
+  it("…or when the view alone is big enough, however fast the last pass was", () => {
+    expect(incrementalEligible({ fullMs: 5, visible: INCREMENTAL_MIN_NODES + 1 }, ready, null)).toBe(true);
+    expect(incrementalEligible({ fullMs: 5, visible: INCREMENTAL_MIN_NODES }, ready, null)).toBe(false);
+    expect(incrementalEligible({ fullMs: INCREMENTAL_MIN_MS, visible: 200 }, ready, null)).toBe(false);
+    expect(incrementalEligible({ fullMs: INCREMENTAL_MIN_MS + 1, visible: 200 }, ready, null)).toBe(true);
+  });
+  it("?incremental= overrides the cost thresholds but never the structural half", () => {
+    expect(incrementalEligible({ fullMs: 5, visible: 3 }, ready, "1")).toBe(true);
+    expect(incrementalEligible(big, ready, "0")).toBe(false);
+    // nothing to splice a toggle onto: no previous layout, or not one toggle away from it
+    expect(incrementalEligible(null, ready, "1")).toBe(false);
+    expect(incrementalEligible(big, false, "1")).toBe(false);
+  });
+});
+
+// The mini graph is built from a SUBSET of the ir, and `groupingSkip` derives its answer
+// from the graph it is handed — so the subset has to preserve every input the rule reads.
+describe("the mini graph gets the same answer as the parent", () => {
+  /** `package > module > dir > file > function`, with the imports LEAVING module:a. */
+  const deep = (dirs: number, filesPer: number, outward: boolean): GraphIR => {
+    const nodes: GraphIR["nodes"] = [{ id: "package:p", kind: "package", name: "p" }];
+    const edges: GraphIR["edges"] = [];
+    const add = (k: string, f: string, t: string) => edges.push({ id: `e:${k}:${f}->${t}`, kind: k, from: f, to: t });
+    const files: Record<string, string[]> = { "module:a": [], "module:b": [] };
+    for (const m of ["module:a", "module:b"]) {
+      nodes.push({ id: m, kind: "module", name: m, parent: "package:p" });
+      add("contains", "package:p", m);
+      for (let d = 0; d < dirs; d++) {
+        const did = `module:${m.slice(7)}/d${d}`;
+        nodes.push({ id: did, kind: "module", name: `d${d}`, parent: m });
+        add("contains", m, did);
+        for (let i = 0; i < filesPer; i++) {
+          const fid = `file:${m.slice(7)}/d${d}/f${i}.ts`;
+          nodes.push({ id: fid, kind: "file", name: `f${i}`, parent: did });
+          add("contains", did, fid);
+          files[m].push(fid);
+          for (let j = 0; j < 4; j++) {
+            nodes.push({ id: `function:${fid.slice(5)}:fn${j}`, kind: "function", name: `fn${j}`, parent: fid });
+            add("contains", fid, `function:${fid.slice(5)}:fn${j}`);
+          }
+        }
+      }
+    }
+    for (let i = 0; i < files["module:a"].length; i++)
+      add("imports", files["module:a"][i], outward ? files["module:b"][i] : files["module:a"][(i + 1) % files["module:a"].length]);
+    const cmp = (a: { id: string }, b: { id: string }) => Buffer.compare(Buffer.from(a.id), Buffer.from(b.id));
+    nodes.sort(cmp);
+    edges.sort(cmp);
+    return { irVersion: "0.2", generator: { tool: "t", version: "0", commit: null }, root: "package:p", nodes, edges } as GraphIR;
+  };
+
+  it("splices a subtree whose edges LEAVE it — the case the path exists for", async () => {
+    // With the mini's edge list filtered by `&&`, a file whose only imports cross the
+    // boundary was an endpoint in the parent and not one in the mini, so the mini elided it
+    // and the count check refused the splice. Permanently, and on exactly the expensive
+    // views: cross-container edges are what make a layout slow.
+    for (const outward of [true, false]) {
+      const g = deep(8, 10, outward);
+      const base = await layoutGraph(g, new Set(["module:a"]), {});
+      const r = await incrementalToggle(g, new Set(), "module:a", base, {});
+      expect(r, `outward=${outward}`).not.toBeNull();
+      expect(r!.nodes.length).toBeGreaterThan(base.nodes.length);
+    }
+  }, 300000);
 });

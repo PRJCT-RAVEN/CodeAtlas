@@ -2,13 +2,14 @@
 // leaf `file` nodes, collapsed-chip widths, attrs.scale, pinned stability.
 
 import { describe, it, expect } from "vitest";
+import { isDense, isHairball, DENSE_MIN_EDGES } from "../src/ir/density";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { layoutGraph, layoutTier, collapsedWidth, leafWidth, labelWidth, edgeKey, type DisplayNode } from "../src/layout/elk";
-import { db } from "./budget.test";
+import { layoutGraph, layoutTier, FASTEST_EDGES, collapsedWidth, leafWidth, labelWidth, edgeKey, buildDisplay, type DisplayNode } from "../src/layout/elk";
+import { db } from "./fixtures";
 import { placeLabels, collisionPenalty, segmentCells, CELL, PENALTY } from "../src/layout/labels";
-import { orthoPath, midpoint } from "../src/edges/ElkEdge";
+import { orthoPath, midpoint, edgeChipClass, edgeDeltaColor } from "../src/edges/ElkEdge";
 import type { GraphIR } from "../src/ir/types";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -426,7 +427,7 @@ describe("dense and heavy views", () => {
     const { nodes, edges, mode } = await layoutGraph(g, collapsed);
     expect(nodes.length).toBe(40);
     expect(edges.length).toBeGreaterThan(3 * 40);
-    expect(mode).toEqual({ tier: layoutTier(40, edges.length), dense: true, heavy: true });
+    expect(mode).toEqual({ tier: layoutTier(40, edges.length), dense: true, heavy: true, hairball: edges.length > FASTEST_EDGES });
     expect(edges.every((e) => e.points === undefined)).toBe(true); // drawn as curves by the edge component
     // and the chips fold into rows instead of a 40-deep chain
     expect(new Set(nodes.map((n) => Math.round(n.y))).size).toBeLessThan(12);
@@ -440,7 +441,7 @@ describe("dense and heavy views", () => {
   });
   it("small views are untouched: quality tier, everything routed", async () => {
     const { edges, mode } = await layoutGraph(dfd, new Set());
-    expect(mode).toEqual({ tier: "quality", dense: false, heavy: false });
+    expect(mode).toEqual({ tier: "quality", dense: false, heavy: false, hairball: false });
     expect(edges.every((e) => e.points && e.points.length >= 2)).toBe(true);
   });
 });
@@ -467,5 +468,80 @@ describe("wide layering applies to edge-less siblings only", () => {
     const laid = await layoutGraph(iso, new Set());
     const rows = new Set(laid.nodes.filter((n) => n.ir.id.startsWith("step:i")).map((n) => Math.round(n.y))).size;
     expect(rows).toBeGreaterThan(3);
+  });
+});
+
+// `isDense`'s two conjuncts. The ratio half is exercised everywhere; the MINIMUM half never
+// was, because no fixture is small-and-high-ratio — every `db()` sits at exactly 2.0 edges
+// per node and `lumpy`/`nested`/`bucketed` have no edges at all (pattern b).
+describe("a small conceptual view is never dense", () => {
+  it("needs the edge MINIMUM as well as the ratio", () => {
+    expect(isDense(6, 20), "6 steps, 20 edges: a hand-authored dataflow").toBe(false);
+    expect(isDense(6, 20 * 40)).toBe(true); // …the same ratio, past the minimum
+    expect(isDense(300, DENSE_MIN_EDGES), "at the minimum, not over it").toBe(false);
+    expect(isDense(300, DENSE_MIN_EDGES + 1)).toBe(false); // over the minimum, ratio too low
+    expect(isDense(60, DENSE_MIN_EDGES + 1)).toBe(true); // over both
+    // and the hairball band sits on top of dense, never below it
+    expect(isHairball(60, DENSE_MIN_EDGES + 1)).toBe(false);
+    expect(isHairball(60, FASTEST_EDGES + 1)).toBe(true);
+    expect(isHairball(6, 20)).toBe(false);
+  });
+});
+
+describe("an aggregated edge SUMS its constituents' multiplicities", () => {
+  it("×5 and ×3 between two collapsed containers is ×8, not ×2", () => {
+    // Every fixture in fixtures.ts emits edges with neither `count` nor `locs`, so
+    // `edgeCount` is 1 for all of them and no fixture can tell "sum of multiplicities"
+    // apart from "number of IR edges" — `prev.count += count` could be `+= 1` with the
+    // whole suite green (pattern b). Verified in the browser as `calls ×8`; pinned here.
+    const g = {
+      irVersion: "0.2", generator: { tool: "t", version: "0", commit: null }, root: "pkg:p",
+      nodes: [
+        { id: "pkg:p", kind: "package", name: "p" },
+        { id: "module:a", kind: "module", name: "a", parent: "pkg:p" },
+        { id: "module:b", kind: "module", name: "b", parent: "pkg:p" },
+        { id: "function:a/f", kind: "function", name: "f", parent: "module:a" },
+        { id: "function:a/g", kind: "function", name: "g", parent: "module:a" },
+        { id: "function:b/h", kind: "function", name: "h", parent: "module:b" },
+      ],
+      edges: [
+        { id: "e:calls:function:a/f->function:b/h", kind: "calls", from: "function:a/f", to: "function:b/h", count: 5 },
+        { id: "e:calls:function:a/g->function:b/h", kind: "calls", from: "function:a/g", to: "function:b/h", locs: [{ file: "x", line: 1 }, { file: "x", line: 2 }, { file: "x", line: 3 }] },
+        { id: "e:contains:module:a->function:a/f", kind: "contains", from: "module:a", to: "function:a/f" },
+        { id: "e:contains:module:a->function:a/g", kind: "contains", from: "module:a", to: "function:a/g" },
+        { id: "e:contains:module:b->function:b/h", kind: "contains", from: "module:b", to: "function:b/h" },
+        { id: "e:contains:pkg:p->module:a", kind: "contains", from: "pkg:p", to: "module:a" },
+        { id: "e:contains:pkg:p->module:b", kind: "contains", from: "pkg:p", to: "module:b" },
+      ],
+    } as unknown as GraphIR;
+    const m = buildDisplay(g, new Set(["module:a", "module:b"]));
+    const e = m.displayEdges.find((x) => x.kind === "calls")!;
+    expect([e.source, e.target]).toEqual(["module:a", "module:b"]);
+    expect(e.count, "5 from count plus 3 from locs").toBe(8);
+    expect(e.irIds.length).toBe(2);
+    expect(e.label).toBe("calls ×8");
+  });
+});
+
+describe("the edge chip's delta treatment", () => {
+  it("green for added, AMBER for modified, nothing otherwise", () => {
+    expect(edgeChipClass({ inferred: false })).toBe("edge-chip");
+    expect(edgeChipClass({ inferred: true })).toBe("edge-chip inferred");
+    expect(edgeChipClass({ inferred: false, delta: "added" })).toBe("edge-chip delta-added");
+    // the whole point: `delta ? "delta-added" : ""` painted a modified edge GREEN, so an
+    // edge whose count changed read as new
+    expect(edgeChipClass({ inferred: false, delta: "modified" })).toBe("edge-chip delta-modified");
+    expect(edgeChipClass({ inferred: true, delta: "modified" })).toBe("edge-chip inferred delta-modified");
+  });
+
+  it("and the STROKE carries it too, because in a dense view there is no chip", () => {
+    // The only views where a delta edge is specially drawn at all are dense ones — a plain
+    // view lights everything — and those are exactly the views that suppress chips. Colour
+    // on the chip alone meant a green and an amber swatch in the Key over two identical
+    // blue edges.
+    expect(edgeDeltaColor({ delta: "added" })).toBe("var(--delta-added)");
+    expect(edgeDeltaColor({ delta: "modified" })).toBe("var(--delta-modified)");
+    expect(edgeDeltaColor({})).toBeNull();
+    expect(edgeDeltaColor(undefined)).toBeNull();
   });
 });

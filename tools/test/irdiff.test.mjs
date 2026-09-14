@@ -112,6 +112,34 @@ test("malformed shapes do not crash: missing arrays, non-object entries", () => 
   assert.equal(d.summary.edges.new, 0);
 });
 
+test("an edge's multiplicity is count ?? locs.length — the number the viewer draws", () => {
+  // `locs` without `count` is what the honesty rule produces (it mandates locs, never
+  // count). Comparing the raw `count` field said "(no changes)" for an edge whose call
+  // sites went 3 → 7 while the viewer drew `calls ×7` in amber — the two tools disagreed
+  // about the same two files, which is the tell earlier rounds used to FIND bugs.
+  const locsOnly = (n) =>
+    ir(
+      [{ id: "flow:main", kind: "flow", name: "Main" }, { id: "step:a", kind: "step", name: "A", parent: "flow:main" }, { id: "step:b", kind: "step", name: "B", parent: "flow:main" }],
+      [
+        { id: "e:contains:flow:main->step:a", kind: "contains", from: "flow:main", to: "step:a" },
+        { id: "e:contains:flow:main->step:b", kind: "contains", from: "flow:main", to: "step:b" },
+        { id: "e:calls:step:a->step:b", kind: "calls", from: "step:a", to: "step:b", locs: Array.from({ length: n }, (_, i) => ({ file: "a.py", line: i + 1 })) },
+      ]
+    );
+  const r = run(locsOnly(3), locsOnly(7), "--json");
+  assert.equal(r.code, 0);
+  const d = JSON.parse(r.out);
+  assert.equal(d.summary.changed, true);
+  assert.deepEqual(d.edges.modified.map((e) => e.id), ["e:calls:step:a->step:b"]);
+  assert.deepEqual(d.edges.modified[0].changes.count, { from: 3, to: 7 });
+  // the human form prints the derived number too
+  assert.match(run(locsOnly(3), locsOnly(7)).out, /count 3 → 7/);
+  // …and the same multiplicity spelled two ways is NOT a change
+  const asCount = locsOnly(3);
+  asCount.edges[2] = { ...asCount.edges[2], count: 3, locs: undefined };
+  assert.equal(JSON.parse(run(locsOnly(3), asCount, "--json").out).summary.changed, false);
+});
+
 test("unreadable / non-JSON file → exit 1; usage → exit 2", () => {
   const bad = run("{oops", OLD);
   assert.equal(bad.code, 1);

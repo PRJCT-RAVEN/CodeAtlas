@@ -5,9 +5,19 @@
 
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import type { Point } from "../layout/elk";
-import { useAtlas } from "../store";
+import { useAtlas, edgeIsLit, edgeIsPainted } from "../store";
 
 export type ElkEdgeData = {
+  /**
+   * The display edge's kind — the Key lists the kinds actually DRAWN. REQUIRED on purpose:
+   * a test that the object carries it can only assert against an object the test itself
+   * built, which is no assertion at all (the Key's own test hand-builds one). Making it
+   * required moves the guarantee to the compiler, where dropping the field is an error
+   * rather than a silently empty legend.
+   */
+  kind: string;
+  /** How many source relations this edge stands for — the details panel orders by it. */
+  count: number;
   points?: Point[];
   labelPos?: Point;
   label: string;
@@ -15,9 +25,11 @@ export type ElkEdgeData = {
   dash?: string;
   width: number;
   inferred: boolean;
-  delta?: "added";
+  delta?: "added" | "modified";
   /** Dense view: draw faint unless this edge touches the selected node. */
   faint?: boolean;
+  /** Hairball view: draw NOTHING unless this edge touches the selected node (see LayoutMode.hairball). */
+  hairball?: boolean;
   [key: string]: unknown;
 };
 export type ElkEdgeType = Edge<ElkEdgeData, "elk">;
@@ -63,10 +75,43 @@ export function midpoint(pts: Point[]): Point {
   return pts[pts.length - 1];
 }
 
+/** The stroke colour a changed edge takes, or null when it did not change. */
+export function edgeDeltaColor(d: Pick<ElkEdgeData, "delta"> | undefined): string | null {
+  if (d?.delta === "added") return "var(--delta-added)";
+  if (d?.delta === "modified") return "var(--delta-modified)";
+  return null;
+}
+
+/**
+ * The chip's classes. Pure and exported because the delta half is a RULE, not decoration:
+ * any delta used to paint `delta-added` green, so an edge whose `count` changed read as new.
+ * Amber is what "modified" means everywhere else (CLAUDE.md: green = added, amber = modified),
+ * and inside JSX nothing could assert it.
+ */
+export function edgeChipClass(d: Pick<ElkEdgeData, "inferred" | "delta">): string {
+  return (
+    "edge-chip" +
+    (d.inferred ? " inferred" : "") +
+    (d.delta === "added" ? " delta-added" : d.delta === "modified" ? " delta-modified" : "")
+  );
+}
+
 export function ElkEdge(props: EdgeProps<ElkEdgeType>) {
   const { id, data, markerEnd, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition } = props;
-  const selected = useAtlas((s) => s.selected);
-  const lit = !data?.faint || (selected !== null && (selected === source || selected === target));
+  // The selected node AND its subtree: clicking a container also expands it, and an
+  // expanded container is not an edge endpoint any more — its children are. Matching the
+  // id alone lit nothing in exactly the views that tell the user to select something.
+  const litIds = useAtlas((s) => s.litIds);
+  // `crossesSelection`, not "either end is in the selection": selecting a container lights
+  // its whole subtree, so the latter made a top-level selection light the entire graph and
+  // switched the hairball economies off (see store.ts). A newly-ADDED edge is always lit —
+  // it is the one thing a delta view exists to show, and rare by definition.
+  const lit = edgeIsLit(litIds, source, target, { faint: data?.faint, delta: data?.delta });
+  // Past a certain density the faint cloud is not texture, it is 2 SVG paths x N edges of
+  // paint on every pan (9,388 edges in the 100-bucket overview of a 10,000-table import:
+  // 2.6 s). Draw nothing until the edge is traced — which is exactly what the status bar
+  // tells the user to do, and the details panel lists the same edges with counts.
+  if (!edgeIsPainted(litIds, source, target, data)) return null;
   let path: string;
   let lx: number;
   let ly: number;
@@ -78,7 +123,13 @@ export function ElkEdge(props: EdgeProps<ElkEdgeType>) {
   } else {
     [path, lx, ly] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   }
-  const color = data?.color ?? "var(--edge-neutral)";
+  // A CHANGED edge takes the delta colour on its STROKE, not only on its chip. The chip is
+  // suppressed in a dense view (`!faint` below) — and a dense view is the only place the
+  // delta clause in `edgeIsLit` is reachable at all, since a plain view short-circuits on
+  // `!faint` and lights everything. So carrying the delta on the chip alone meant the Key
+  // showed a green and an amber swatch while the canvas drew two identical blue edges:
+  // round 24 made a changed edge DRAWN without making it distinguishable.
+  const color = edgeDeltaColor(data) ?? data?.color ?? "var(--edge-neutral)";
   return (
     <>
       <BaseEdge
@@ -87,10 +138,12 @@ export function ElkEdge(props: EdgeProps<ElkEdgeType>) {
         markerEnd={lit ? markerEnd : undefined}
         style={{ stroke: color, strokeDasharray: data?.dash, strokeWidth: data?.width ?? 1.4, opacity: lit ? 1 : 0.12 }}
       />
-      {data?.label && lit && !data?.faint && (
+      {/* …and its chip is shown even there: a delta edge is rare by definition, which is the
+          same argument this file already makes for drawing one at all. */}
+      {data?.label && lit && (!data?.faint || data?.delta) && (
         <EdgeLabelRenderer>
           <div
-            className={"edge-chip" + (data.inferred ? " inferred" : "") + (data.delta ? " delta-added" : "")}
+            className={edgeChipClass(data)}
             style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }}
             title={data.inferred ? "inferred by the author — not verified in code" : undefined}
           >

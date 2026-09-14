@@ -45,8 +45,9 @@ conversationally; each answer is a new graph rendered live.
   tokens you care about (it survives plugin updates).
 - macOS, Linux and Windows (Node.js ≥ 20; on Windows the launcher is
   `bin\codeatlas-viewer.cmd`, or the shell shim under Git Bash / WSL). All three run the
-  full suites in CI; Windows was also tested by hand on 2026-09-07
-  ([docs/audit/2026-09-07-windows-test.md](docs/audit/2026-09-07-windows-test.md)) — there
+  full suites in CI; Windows was also tested by hand on 2026-09-07 and again on 2026-09-12
+  for 0.3.0 ([docs/audit/2026-09-12-windows-test.md](docs/audit/2026-09-12-windows-test.md),
+  plugin flow included) — there
   "Open in editor" uses VS Code when `code` is on PATH and Notepad otherwise, and the
   schema importer needs the `sqlite3` CLI (`winget install SQLite.SQLite`).
 - Big graphs without Claude: `tools/schema2ir.mjs` imports a database schema (SQLite

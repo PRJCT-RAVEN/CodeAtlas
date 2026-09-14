@@ -26,6 +26,8 @@ import elkWorkerUrl from "elkjs/lib/elk-worker.min.js?url";
 import type { GraphIR, IRNode, EdgeKind } from "../ir/types";
 import { isReadFamily } from "../ir/families";
 import { placeLabels, type Box } from "./labels";
+import { FASTEST_EDGES, edgeKey, isDense, isHairball, edgeCount } from "../ir/density";
+import { groupingSkip } from "../ir/grouping";
 
 export interface Point {
   x: number;
@@ -72,6 +74,15 @@ export interface LayoutMode {
   tier: LayoutTier;
   /** Edge-heavy view: more than DENSE_RATIO edges per visible node (and > DENSE_MIN_EDGES). */
   dense: boolean;
+  /**
+   * Dense AND past FASTEST_EDGES: the faint edge cloud is not drawn at all until a node is
+   * selected. Every edge costs two SVG paths (BaseEdge draws an interaction path beside the
+   * visible one), so the 100-bucket overview of a 10,000-table import was 9,388 edges =
+   * 18,776 paths and 2.6 s per pan. At that density the cloud is mush rather than texture,
+   * and the status bar already promises "select a node to trace them" — this makes that
+   * literal. The details panel still lists the selected node's edges with counts.
+   */
+  hairball: boolean;
   /** Fastest tier or dense: polyline routing, containers laid out separately, chips at midpoints. */
   heavy: boolean;
   /** Produced by layout/incremental.ts: only the toggled subtree was laid out; "Tidy" runs a full pass. */
@@ -91,6 +102,8 @@ export interface LayoutResult {
    * approximate layout and plain curves on the user's first interaction.
    */
   layoutMs: number;
+  /** See `DisplayModel.rep` — the resolver for THIS layout's collapse state. */
+  rep: (id: string) => string | undefined;
 }
 
 export const LEAF_HEIGHT = 40;
@@ -119,9 +132,10 @@ export type LayoutTier = "quality" | "fast" | "fastest";
  * so every existing view is unchanged.
  */
 export const WIDE_CHILDREN = 12;
-/** A view is "dense" when it has more than this many edges AND more than DENSE_RATIO edges per visible node. */
-export const DENSE_MIN_EDGES = 200;
-export const DENSE_RATIO = 3;
+// The density predicate lives in ir/density.ts so the visibility budget can use it without
+// importing the layout engine; re-exported here because everything already imports it from
+// this module.
+export { DENSE_MIN_EDGES, DENSE_RATIO, FASTEST_EDGES, edgeKey, isDense, isHairball } from "../ir/density";
 /** `isolated` = siblings with no edge ELK will see; a hub with 15 targets is NOT wide. */
 export function wideLayering(isolated: number): Record<string, string> {
   if (isolated <= WIDE_CHILDREN) return {};
@@ -134,8 +148,6 @@ export function wideLayering(isolated: number): Record<string, string> {
 }
 export const FAST_THRESHOLD = 400;
 export const FASTEST_THRESHOLD = 1500;
-/** Edges are the expensive part of hierarchical orthogonal routing: 1,200 cross-container edges cost 3 s to lay out and 2.4 s per pan (measured); above this many, the heavy path. */
-export const FASTEST_EDGES = 800;
 export function layoutTier(visibleNodes: number, displayEdges: number): LayoutTier {
   if (visibleNodes > FASTEST_THRESHOLD || displayEdges > FASTEST_EDGES) return "fastest";
   return Math.max(visibleNodes, displayEdges) > FAST_THRESHOLD ? "fast" : "quality";
@@ -177,14 +189,45 @@ function leafScale(n: IRNode): number {
 type ElkInstance = { layout(graph: ElkNode): Promise<ElkNode> };
 let elkPromise: Promise<ElkInstance> | null = null;
 
+/**
+ * Throwaway layout run once per engine, before any real one.
+ *
+ * Constructing the ELK API is cheap; the FIRST `layout()` call is not — the worker loads
+ * and JITs the algorithm on its first job. `layoutMs` used to start after construction
+ * only, so that cost still landed on the first real layout and pushed `fullMs` past
+ * INCREMENTAL_MIN_MS: about one fresh load in five of an 18-node graph then answered the
+ * user's very first collapse with an approximate layout (overlapping chips, edges through
+ * nodes) and stayed there until "Tidy". Exercising the expensive paths — layered,
+ * orthogonal routing, an inline label — here means the first measurement is a warm one.
+ */
+const WARMUP_GRAPH: ElkNode = {
+  id: "__warm__",
+  layoutOptions: { "elk.algorithm": "layered", "elk.direction": "DOWN", "elk.edgeRouting": "ORTHOGONAL", "elk.json.edgeCoords": "ROOT" },
+  children: [
+    { id: "w1", width: 100, height: LEAF_HEIGHT },
+    { id: "w2", width: 100, height: LEAF_HEIGHT },
+  ],
+  edges: [{ id: "we", sources: ["w1"], targets: ["w2"], labels: [{ text: "warm", width: 40, height: LABEL_H }] }] as ElkExtendedEdge[],
+};
+
 async function createElk(): Promise<ElkInstance> {
-  if (typeof Worker !== "undefined") {
-    // browser: real worker so a 1000-node layout never freezes the UI
-    const { default: ELKApi } = await import("elkjs/lib/elk-api.js");
-    return new ELKApi({ workerFactory: () => new Worker(elkWorkerUrl) }) as unknown as ElkInstance;
-  }
-  const { default: ELKBundled } = await import("elkjs/lib/elk.bundled.js");
-  return new ELKBundled() as unknown as ElkInstance;
+  const elk = await (async (): Promise<ElkInstance> => {
+    if (typeof Worker !== "undefined") {
+      // browser: real worker so a 1000-node layout never freezes the UI
+      const { default: ELKApi } = await import("elkjs/lib/elk-api.js");
+      return new ELKApi({ workerFactory: () => new Worker(elkWorkerUrl) }) as unknown as ElkInstance;
+    }
+    const { default: ELKBundled } = await import("elkjs/lib/elk.bundled.js");
+    return new ELKBundled() as unknown as ElkInstance;
+  })();
+  // Awaited HERE and not in warmElk(), so `getElk()` never resolves onto a cold engine:
+  // resolving early would just queue the first real layout behind the warm-up and put the
+  // same cost back inside the measurement. Timed out like any other layout — this one runs
+  // INSIDE the cached `elkPromise`, so a worker that boots but hangs would otherwise leave
+  // `await getElk()` pending for good: "laying out…" forever, and no retry because the
+  // rejected-promise reset never fires.
+  await withTimeout(elk.layout(WARMUP_GRAPH), LAYOUT_TIMEOUT_MS).catch(() => {}); // a failed warm-up is not a broken engine
+  return elk;
 }
 
 /** Start building the engine now: the first layout should not pay for worker boot. */
@@ -213,10 +256,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** Display-edge id: unambiguous whatever characters the node ids contain. */
-export function edgeKey(kind: string, source: string, target: string): string {
-  return JSON.stringify([kind, source, target]);
-}
+
 
 // --- layout ----------------------------------------------------------------
 
@@ -231,6 +271,17 @@ export interface LayoutOptions {
   routing?: "ORTHOGONAL" | "POLYLINE";
   /** Override whether ELK reserves room for inline label chips (else chips sit at path midpoints). */
   elkLabels?: boolean;
+  /**
+   * Which IR nodes are not display nodes. Default `groupingSkip(ir)`.
+   *
+   * Supplied explicitly by the incremental splicer, which lays out a SUBSET of the graph:
+   * `groupingSkip` reads the edge list, the node COUNT and the root off whatever it is
+   * handed, and the mini graph rewrites all three — so a predicate derived from it answers
+   * differently for the same node and the splice is refused. Round 19 patched the edge input
+   * and introduced the other two in the same change; passing the parent's own predicate
+   * closes the class rather than chasing inputs one at a time.
+   */
+  skip?: (n: IRNode) => boolean;
   /** Extra ELK options merged into the root graph / every layered container (experiments, tests). */
   extraRootOptions?: Record<string, string>;
   extraContainerOptions?: Record<string, string>;
@@ -251,17 +302,30 @@ export interface DisplayModel {
   isContainer: (id: string) => boolean;
   /** Leaf/collapsed-chip size for a visible non-container node. */
   leafSize: (id: string) => { width: number; height: number };
+  /**
+   * The display node an IR endpoint renders at, or undefined when it renders nowhere. What
+   * the delta needs to resolve a REMOVED IR edge onto the display edge it used to belong to:
+   * a display edge that shrank has constituents that are no longer in its `irIds`, so their
+   * multiplicity can only be found by asking where they would land now.
+   */
+  rep: (id: string) => string | undefined;
 }
 
 export function buildDisplay(
   ir: GraphIR,
   collapsed: ReadonlySet<string>,
-  labelFor?: LayoutOptions["labelFor"]
+  labelFor?: LayoutOptions["labelFor"],
+  skipOverride?: LayoutOptions["skip"]
 ): DisplayModel {
   const byId = new Map(ir.nodes.map((n) => [n.id, n]));
   const irChildren = new Map<string, number>();
   for (const n of ir.nodes) if (n.parent) irChildren.set(n.parent, (irChildren.get(n.parent) ?? 0) + 1);
-  const skip = (n: IRNode) => n.id === ir.root || (n.kind === "file" && (irChildren.get(n.id) ?? 0) > 0);
+  // ONE definition, shared with the budget — see ir/grouping.ts. The ROOT check is always
+  // this graph's own: an override comes from the full graph, whose root is not the root
+  // here. (The incremental splicer lays out a subtree with the toggled container AS the
+  // canvas; without this it became a display node and the node count no longer matched.)
+  const grouping = skipOverride ?? groupingSkip(ir);
+  const skip = (n: IRNode) => n.id === ir.root || grouping(n);
   const displayParent = (n: IRNode): string | undefined => {
     let p = n.parent ? byId.get(n.parent) : undefined;
     while (p && skip(p)) p = p.parent ? byId.get(p.parent) : undefined;
@@ -283,18 +347,44 @@ export function buildDisplay(
   // --- visibility & edge re-routing -------------------------------------
   // rep(id) = the node an IR endpoint renders at: itself if visible, else the
   // outermost collapsed ancestor that is itself visible.
-  const rep = (id: string): string | undefined => {
-    let cur: string | undefined = id;
-    while (cur && (!byId.has(cur) || skip(byId.get(cur)!))) cur = byId.get(cur)?.parent;
-    if (!cur || !parentOf.has(cur)) return undefined;
+  //
+  // The ancestor walk is INCREMENTAL, not per call. `rep` used to rebuild the whole chain
+  // every time and is called once per display node plus twice per edge, which is O(n x
+  // depth): a chain of `dir` nodes measured 28 ms at depth 1,000, 259 ms at 3,000 and
+  // 5,016 ms at 12,000 — clean quadratic — while `autoCollapse`, which was made linear for
+  // exactly this input and is documented at these depths in CLAUDE.md, stayed at 14 ms on
+  // the same graph. `topmostOf` walks up only as far as the first ANSWERED ancestor and
+  // fills the chain back in on the way down, the same shape as `budget.ts`'s `depthOf`.
+  /** Outermost collapsed node among `start` and its ancestors — memoised across calls. */
+  const topmost = new Map<string, string | undefined>();
+  const topmostOf = (start: string | undefined): string | undefined => {
+    if (start === undefined) return undefined;
+    if (topmost.has(start)) return topmost.get(start);
     const chain: string[] = [];
-    const seen = new Set<string>();
-    for (let a: string | undefined = cur; a && !seen.has(a); a = parentOf.get(a)) {
+    const seen = new Set<string>(); // parent chains are acyclic (ir/shape.ts) — belt and braces
+    let a: string | undefined = start;
+    while (a !== undefined && !topmost.has(a) && !seen.has(a)) {
       seen.add(a);
       chain.push(a);
+      a = parentOf.get(a);
     }
-    for (let i = chain.length - 1; i >= 1; i--) if (collapsed.has(chain[i])) return chain[i];
-    return cur;
+    let acc = a !== undefined ? topmost.get(a) : undefined;
+    for (let i = chain.length - 1; i >= 0; i--) {
+      acc = acc ?? (collapsed.has(chain[i]) ? chain[i] : undefined); // outermost wins, so never overwrite
+      topmost.set(chain[i], acc);
+    }
+    return topmost.get(start);
+  };
+  const repOf = new Map<string, string | undefined>();
+  const rep = (id: string): string | undefined => {
+    if (repOf.has(id)) return repOf.get(id);
+    let cur: string | undefined = id;
+    while (cur && (!byId.has(cur) || skip(byId.get(cur)!))) cur = byId.get(cur)?.parent;
+    // a STRICT ancestor: a collapsed node still renders as itself, which is what `visible`
+    // (rep(id) === id) depends on.
+    const v = !cur || !parentOf.has(cur) ? undefined : (topmostOf(parentOf.get(cur)) ?? cur);
+    repOf.set(id, v);
+    return v;
   };
 
   const visible = (id: string): boolean => rep(id) === id;
@@ -318,7 +408,7 @@ export function buildDisplay(
     if (s === t && e.from !== e.to) continue;
     const key = edgeKey(e.kind, s, t);
     const prev = agg.get(key);
-    const count = e.count ?? e.locs?.length ?? 1;
+    const count = edgeCount(e);
     const feedback = ann[e.id]?.feedback === true && s !== t;
     if (prev) {
       prev.count += count;
@@ -352,7 +442,7 @@ export function buildDisplay(
       height: Math.round(LEAF_HEIGHT * leafScale(n)),
     };
   };
-  return { byId, irChildren, parentOf, childrenOf, visibleNodes, visibleIds, displayEdges, isContainer, leafSize };
+  return { byId, irChildren, parentOf, childrenOf, visibleNodes, visibleIds, displayEdges, isContainer, leafSize, rep };
 }
 
 export async function layoutGraph(
@@ -362,7 +452,7 @@ export async function layoutGraph(
 ): Promise<LayoutResult> {
   const options: LayoutOptions = opts instanceof Map ? { pinned: opts } : (opts as LayoutOptions);
   const pinned = options.pinned;
-  const model = buildDisplay(ir, collapsed, options.labelFor);
+  const model = buildDisplay(ir, collapsed, options.labelFor, options.skip);
   const { byId, irChildren, parentOf, childrenOf, visibleNodes, visibleIds, displayEdges, isContainer } = model;
 
   // --- build ELK graph ---------------------------------------------------
@@ -394,8 +484,9 @@ export async function layoutGraph(
   // a channel per edge between layers, so 780 edges between 40 schemas make a
   // 165,000 px tower. Above the density threshold both go: polyline routing and
   // chips at path midpoints (measured 2026-09-05, see LayoutTier notes).
-  const dense = displayEdges.length > DENSE_MIN_EDGES && displayEdges.length > DENSE_RATIO * visibleNodes.length;
+  const dense = isDense(visibleNodes.length, displayEdges.length);
   const heavy = tier === "fastest" || dense;
+  const hairball = isHairball(visibleNodes.length, displayEdges.length);
   const routing = options.routing ?? (heavy ? "POLYLINE" : "ORTHOGONAL");
   const elkLabels = options.elkLabels ?? (tier === "quality" && !dense);
   // Heavy views also drop INCLUDE_CHILDREN: routing every hierarchy-crossing
@@ -632,5 +723,5 @@ export async function layoutGraph(
     }
   }
 
-  return { nodes: out, edges: displayEdges, mode: { tier, dense, heavy }, layoutMs: performance.now() - started };
+  return { nodes: out, edges: displayEdges, mode: { tier, dense, heavy, hairball }, layoutMs: performance.now() - started, rep: model.rep };
 }

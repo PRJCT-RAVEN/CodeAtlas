@@ -207,6 +207,22 @@ test("a catalog that would produce invalid IR is refused, not written", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("the self-check really runs: a valid catalog is reported as validated, never as unchecked", () => {
+  // On Windows the validator used to be imported by absolute PATH, which the ESM loader
+  // rejects ("Received protocol 'c:'"); the tool then printed "could not self-check" and
+  // still wrote the file with "validated" in its summary line (2026-09-12 Windows pass).
+  const dir = mkdtempSync(join(tmpdir(), "schema2ir-selfcheck-"));
+  const cat = join(dir, "ok.json");
+  const outPath = join(dir, "out.json");
+  writeFileSync(cat, JSON.stringify({ name: "ok", tables: [{ name: "a", columns: [{ name: "x" }] }] }));
+  const r = spawnSync("node", [TOOL, "--json", cat, "-o", outPath], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /could not self-check/, "the validator must be importable on every platform");
+  assert.match(r.stderr, /validated\)/);
+  assert.ok(existsSync(outPath));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // --- foreign keys must be the ones the database enforces (2026-09-10) ------------
 
 test("SQLite: a REFERENCES clause in another case still resolves — identifiers are case-insensitive", { skip: NO_SQLITE }, () => {

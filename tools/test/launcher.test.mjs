@@ -119,10 +119,16 @@ test("pid verification accepts only this plugin's vite on this port", async () =
 
 // Regressions from the 2026-09-10 pre-deployment audit.
 
-test("runs when reached through a symlinked path (was a silent no-op, exit 0)", async () => {
+test("runs when reached through a symlinked path (was a silent no-op, exit 0)", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "codeatlas-symlink-"));
   const link = join(dir, "launcher-link.mjs");
-  symlinkSync(LAUNCHER, link);
+  try {
+    symlinkSync(LAUNCHER, link);
+  } catch (e) {
+    if (e.code !== "EPERM") throw e;
+    rmSync(dir, { recursive: true, force: true });
+    return t.skip("symlink creation needs Developer Mode or elevation on Windows");
+  }
   const data = mkdtempSync(join(tmpdir(), "codeatlas-launcher-"));
   const port = await freePort();
   const r = spawnSync("node", [link, "paths"], {
@@ -224,17 +230,22 @@ test("a failed dependency update keeps the install that was already working", { 
   rmSync(cache, { recursive: true, force: true });
 });
 
-/** A throwaway copy of the plugin whose node_modules are symlinked to the real ones. */
+/** A throwaway copy of the plugin whose node_modules are linked to the real ones. */
 function fakePluginRoot() {
   const root = mkdtempSync(join(tmpdir(), "codeatlas-uninstall-"));
   const repo = join(here, "../..");
   for (const part of ["bin", "viewer", "schema", ".claude-plugin"]) {
     cpSync(join(repo, part), join(root, part), {
       recursive: true,
-      filter: (src) => !src.includes("node_modules") && !src.includes("/.git"),
+      filter: (src) => !src.includes("node_modules") && !/[\\/]\.git(?:[\\/]|$)/.test(src),
     });
   }
-  for (const part of ["viewer", "schema"]) symlinkSync(join(repo, part, "node_modules"), join(root, part, "node_modules"));
+  // A directory junction needs no privilege on Windows, where a plain symlink needs
+  // Developer Mode or elevation and this whole test used to die with EPERM before it
+  // had started anything (2026-09-12 Windows pass). `rmSync` unlinks a junction without
+  // descending into the real node_modules, the same as a symlink.
+  const linkType = process.platform === "win32" ? "junction" : undefined;
+  for (const part of ["viewer", "schema"]) symlinkSync(join(repo, part, "node_modules"), join(root, part, "node_modules"), linkType);
   return root;
 }
 
@@ -556,4 +567,122 @@ test("install-launchd.sh refuses a TCC-protected checkout unless forced", { skip
   assert.equal(lowerRun.status, 1, `a lowercase ~/documents is the same TCC folder: ${lowerRun.stderr}`);
   assert.match(lowerRun.stderr, /TCC-protected/);
   rmSync(home, { recursive: true, force: true });
+});
+
+// A checkout path with shell/XML metacharacters must install a plist naming that exact
+// path. `sed "s|__REPO__|$REPO|g"` treated `&` in the replacement as "the matched text",
+// so `~/A & B/CodeAtlas` produced `~/A __REPO__ B/CodeAtlas`: a path that does not exist,
+// which `plutil -lint` accepted and `launchctl bootstrap` loaded, leaving an agent that
+// could never start and said nothing about why (found 2026-09-10). `|` broke sed outright
+// and truncated the destination. plutil here is the REAL one — the escaping is half of
+// what is under test, and a plist with a raw `&` in a <string> is not valid XML.
+test("install-launchd.sh survives a checkout path with & < > | and a quote", { skip: process.platform !== "darwin" }, () => {
+  const home = mkdtempSync(join(tmpdir(), "codeatlas-metahome-"));
+  const stubs = join(home, "stub-bin");
+  mkdirSync(stubs, { recursive: true });
+  writeFileSync(join(stubs, "launchctl"), `#!/bin/sh\necho "stub launchctl $*"\nexit 0\n`);
+  chmodSync(join(stubs, "launchctl"), 0o755);
+  const env = { ...process.env, HOME: home, PATH: `${stubs}:/usr/bin:/bin` };
+  const dest = join(home, "Library", "LaunchAgents", "com.codeatlas.viewer.plist");
+
+  for (const dir of ["A & B", "a|b", "x<y>z", "it's", "plain"]) {
+    rmSync(dest, { force: true });
+    const repo = join(home, dir, "CodeAtlas");
+    const script = join(repo, "tools", "install-launchd.sh");
+    scriptCopy("install-launchd.sh", script);
+    scriptCopy("serve.sh", join(repo, "tools", "serve.sh"));
+    cpSync(join(ROOT, "tools", "launchd"), join(repo, "tools", "launchd"), { recursive: true });
+
+    const r = spawnSync("/bin/sh", [script], { encoding: "utf8", env });
+    assert.equal(r.status, 0, `${dir}: ${r.stderr}`);
+    assert.ok(existsSync(dest), `${dir}: nothing installed`);
+    const plist = readFileSync(dest, "utf8");
+    assert.ok(!/__REPO__|__HOME__/.test(plist), `${dir}: a placeholder survived — the substitution did not complete`);
+    // the authority is what plutil reads back out, not what the file looks like
+    const prog = spawnSync("plutil", ["-extract", "ProgramArguments.1", "raw", "-o", "-", dest], { encoding: "utf8" });
+    assert.equal(prog.status, 0, `${dir}: plutil could not read the plist back: ${prog.stderr}`);
+    assert.equal(prog.stdout.trim(), join(repo, "tools", "serve.sh"), `${dir}: wrong path in the installed plist`);
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+// --- publish (2026-09-12): validate + rename in one step, behind the launcher's own permission ---
+// The skill's `mv <draft> <LIVE_DIR>/graph.json` can never run in plugin mode: Claude Code
+// refuses `mv` outside the session's working directories, and the live dir is outside every
+// project. These pin the contract the subcommand replaces it with.
+
+const SHOWCASE = join(here, "../../docs/examples/order-pipeline.graph.json");
+
+test("publish: a valid draft is validated, then renamed over the live graph; --to picks the name", () => {
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-publish-"));
+  const live = join(data, "live");
+  // 1. a draft OUTSIDE the live dir, before the live dir exists (a publish before the first start)
+  const outside = join(data, "draft a.json"); // a space: must stay one argument all the way down
+  writeFileSync(outside, readFileSync(SHOWCASE));
+  let r = run(["publish", outside], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /published .*graph\.json \(18 nodes, 34 edges, VALID\)/);
+  assert.ok(!existsSync(outside), "the draft is consumed by the rename");
+  assert.deepEqual(JSON.parse(readFileSync(join(live, "graph.json"), "utf8")), JSON.parse(readFileSync(SHOWCASE, "utf8")));
+  if (process.platform !== "win32") assert.equal(statSync(live).mode & 0o777, 0o700, "the live dir is private even when publish created it");
+  // 2. a bare name resolves under the live dir, --to names the live file, and the URL says how to view it
+  writeFileSync(join(live, "op.json"), readFileSync(SHOWCASE));
+  r = run(["publish", "op", "--to", "order-pipeline"], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(existsSync(join(live, "order-pipeline.json")));
+  assert.ok(!existsSync(join(live, "op.json")));
+  assert.match(r.stdout, /URL=http:\/\/localhost:\d+\/\?graph=order-pipeline/);
+  rmSync(data, { recursive: true, force: true });
+});
+
+test("publish: an invalid draft is refused and left in place, and the live graph is untouched", () => {
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-publish-"));
+  const live = join(data, "live");
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(live, "graph.json"), '{"previous": true}\n'); // whatever was live before; must survive
+  const g = JSON.parse(readFileSync(SHOWCASE, "utf8"));
+  g.nodes.push({ ...g.nodes[1] }); // a duplicate id: schema-valid, IR-invalid
+  writeFileSync(join(live, "bad.json"), JSON.stringify(g));
+  let r = run(["publish", "bad"], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /not valid IR/);
+  assert.match(r.stderr, /duplicate node id/);
+  assert.match(r.stderr, /nothing published/);
+  assert.ok(existsSync(join(live, "bad.json")), "the draft stays for the author to fix");
+  assert.equal(readFileSync(join(live, "graph.json"), "utf8"), '{"previous": true}\n');
+  // not JSON at all
+  writeFileSync(join(live, "nj.json"), "{oops");
+  r = run(["publish", "nj.json"], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not JSON/);
+  assert.ok(existsSync(join(live, "nj.json")));
+  // missing: names what it looked for
+  r = run(["publish", "nothing"], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no such draft: nothing \(looked for .*nothing\.json\)/);
+  assert.equal(readFileSync(join(live, "graph.json"), "utf8"), '{"previous": true}\n');
+  rmSync(data, { recursive: true, force: true });
+});
+
+test("publish: usage errors exit 2 and name the problem; the live file itself is never a draft", () => {
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-publish-"));
+  const live = join(data, "live");
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(live, "graph.json"), readFileSync(SHOWCASE));
+  for (const [args, re] of [
+    [[], /usage/],
+    [["a", "b"], /usage/],
+    [["op", "--to"], /--to needs a name/],
+    [["op", "--to", "../x"], /plain graph name/],
+    [["op", "--to", "two words"], /plain graph name/],
+    [["op", "--bogus"], /unknown flag/],
+    [["graph"], /already is the live file/],
+    [[join(live, "graph.json"), "--to", "graph.json"], /already is the live file/],
+  ]) {
+    const r = run(["publish", ...args], { CODEATLAS_DATA: data });
+    assert.equal(r.status, 2, `${args.join(" ")}: ${r.stderr}`);
+    assert.match(r.stderr, re, args.join(" "));
+  }
+  assert.deepEqual(JSON.parse(readFileSync(join(live, "graph.json"), "utf8")), JSON.parse(readFileSync(SHOWCASE, "utf8")));
+  rmSync(data, { recursive: true, force: true });
 });

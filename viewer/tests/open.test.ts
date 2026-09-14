@@ -3,11 +3,11 @@
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { platform, tmpdir, networkInterfaces } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, posix, win32 } from "node:path";
 import { realpathSync } from "node:fs";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
-import { resolveLocFile, allowedRoots, isSystemPath, systemPrefixes, sameOrigin, hostAllowed, localRequest, editorCommands, liveFilePath, safeForGenericOpen, substituteToken, loopbackPeer, liveEtag, notModified, cmdEscapeArg, cmdEscapeCommand, resolveOnPath, spawnDetached } from "../vite.config";
+import { resolveLocFile, allowedRoots, tooBroadRoot, foldCase, deniedExceptions, isSystemPath, systemPrefixes, sameOrigin, hostAllowed, localRequest, editorCommands, liveFilePath, safeForGenericOpen, substituteToken, loopbackPeer, liveEtag, notModified, cmdEscapeArg, cmdEscapeCommand, resolveOnPath, spawnDetached } from "../vite.config";
 
 // a fake $HOME with a repo inside it and a file outside it
 const home = realpathSync(mkdtempSync(join(tmpdir(), "codeatlas-home-")));
@@ -18,6 +18,8 @@ const other = join(home, "other");
 mkdirSync(other, { recursive: true });
 writeFileSync(join(other, "note.md"), "# hi\n");
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "codeatlas-outside-")));
+// a scratch base for the symlinked-$HOME test (its home must NOT be pre-resolved)
+const symBase = realpathSync(mkdtempSync(join(tmpdir(), "codeatlas-symhome-")));
 writeFileSync(join(outside, "secret.txt"), "x\n");
 // Windows needs Developer Mode or elevation to create symlinks: only the symlink case is skipped there.
 let canSymlink = true;
@@ -238,7 +240,8 @@ describe("system-path fence", () => {
     const win = systemPrefixes("win32", FAKE_WIN_HOME);
     expect(win.some((p) => /Windows$/.test(p))).toBe(true);
     expect(win.some((p) => /Program Files$/.test(p))).toBe(true);
-    expect(win).toContain(join(FAKE_WIN_HOME, "AppData"));
+    // composed with win32 separators whatever the host: the list describes Windows
+    expect(win).toContain(win32.join(FAKE_WIN_HOME, "AppData"));
   });
 
   it("refuses system locations and their contents", () => {
@@ -257,6 +260,191 @@ describe("system-path fence", () => {
     // realpath first, then the deny-list: a symlink in the project pointing at
     // /etc/hosts must not inherit the project's blessing
     expect(resolveLocFile("Sources/etc-link.txt", null, [repo], home)).toBeNull();
+  });
+
+  // The deny-list says where a root may not POINT; this says how specific it has to be.
+  // Found 2026-09-10: `root=/` passed every check (it is a real directory and matches no
+  // system prefix), so a crafted graph could resolve anything outside the deny-list —
+  // `/open?file=$HOME/.zshrc&root=/` answered "resolvable". The fence is "inside the root
+  // the graph names", and "/" (or $HOME, or any ancestor of it) names everything.
+  // macOS and Windows are case-INsensitive and `realpathSync` does not canonicalise case,
+  // so every fence here was one keystroke from being bypassed (found 2026-09-10):
+  // `root=/users` reached all of $HOME and `/PRIVATE/etc/passwd` walked through the
+  // deny-list. These assertions run under the platform's own rules via the `os` argument.
+  it("folds case where the filesystem does, so a re-cased path is the same path", () => {
+    expect(foldCase("/Users/A", "darwin")).toBe("/users/a");
+    expect(foldCase("C:\\Users", "win32")).toBe("c:\\users");
+    expect(foldCase("/Users/A", "linux")).toBe("/Users/A"); // case-sensitive: unchanged
+    // deny-list
+    expect(isSystemPath("/PRIVATE/etc/passwd", "darwin", FAKE_HOME)).toBe(true);
+    expect(isSystemPath("/private/ETC/passwd", "darwin", FAKE_HOME)).toBe(true);
+    expect(isSystemPath("/ETC", "darwin", FAKE_HOME)).toBe(true);
+    expect(isSystemPath(`${FAKE_HOME.toUpperCase()}/Library/Keychains/k`, "darwin", FAKE_HOME)).toBe(true);
+    // …but Linux really is case-sensitive: /ETC is a different directory there. The `os`
+    // argument only chooses the folding and the prefix list; path arithmetic stays with
+    // the host's `node:path`, and win32 `relative()` folds case on its own — so the
+    // case-SENSITIVE assertions only mean something off Windows (the mirror image of the
+    // win32 guard below; both halves run on CI's ubuntu+windows matrix).
+    if (platform() !== "win32") expect(isSystemPath("/ETC/passwd", "linux", "/home/x")).toBe(false);
+    // root fence: /fake-home is the ancestor of /fake-home/dev-user, in any casing
+    const HOME_UP = FAKE_HOME.toUpperCase(); // "/FAKE-HOME/DEV-USER"
+    expect(tooBroadRoot("/FAKE-HOME", FAKE_HOME, "darwin")).toBe(true); // ancestor, re-cased
+    expect(tooBroadRoot(HOME_UP, FAKE_HOME, "darwin")).toBe(true); // $HOME itself, re-cased
+    expect(tooBroadRoot(`${HOME_UP}/dev/app`, FAKE_HOME, "darwin")).toBe(false); // a real project
+    if (platform() !== "win32") expect(tooBroadRoot("/FAKE-HOME", FAKE_HOME, "linux")).toBe(false); // case-sensitive: a different dir
+    // Windows needs win32 `path` semantics, which node only gives us when it IS Windows —
+    // and there `relative()` already folds case for us. CI runs this suite on
+    // windows-latest, which is where the assertion below has meaning.
+    if (platform() === "win32") {
+      expect(tooBroadRoot("C:\\USERS", "C:\\Users\\u", "win32")).toBe(true);
+      expect(isSystemPath("C:\\WINDOWS\\win.ini", "win32", "C:\\Users\\u")).toBe(true);
+    }
+  });
+
+  it("folds unicode normalisation too, not just case", () => {
+    // macOS stores names decomposed (NFD) and accepts the composed spelling (NFC) for the
+    // same directory; `realpathSync` normalises neither. So once case was fixed, an
+    // `attrs.absRoot` in the other normalisation bypassed BOTH fences again on any machine
+    // whose home directory has a non-ASCII name.
+    const nfd = "/vol/Jose\u0301/proj"; // e + combining acute — what APFS stores
+    const nfc = "/vol/Jos\u00e9/proj"; // é — what a graph is likely to carry
+    expect(nfd).not.toBe(nfc); // genuinely different strings…
+    expect(foldCase(nfd, "darwin")).toBe(foldCase(nfc, "darwin")); // …one directory
+    expect(foldCase(nfd, "linux")).not.toBe(foldCase(nfc, "linux")); // untouched off darwin/win32
+    const homeNfd = "/vol/Jose\u0301";
+    const homeNfc = "/vol/Jos\u00e9";
+    expect(tooBroadRoot(homeNfc, homeNfd, "darwin")).toBe(true); // $HOME under its other spelling
+    expect(isSystemPath(`${homeNfc}/.ssh/id_rsa`, "darwin", homeNfd)).toBe(true);
+  });
+
+  it("refuses a directory that HOLDS projects rather than being one", () => {
+    // "/Volumes" is one level below "/", so "at least one directory down" let it through —
+    // and it contains every mounted disk, share and DMG on the machine.
+    for (const p of ["/Volumes", "/mnt", "/media", "/private", "/VOLUMES"])
+      expect(tooBroadRoot(p, FAKE_HOME, "darwin"), p).toBe(true);
+    expect(tooBroadRoot("/Volumes/Work/app", FAKE_HOME, "darwin")).toBe(false); // a project ON one is fine
+    expect(tooBroadRoot("/private/tmp/scratch/app", FAKE_HOME, "darwin")).toBe(false);
+  });
+
+  it.skipIf(!canSymlink)("builds its $HOME-relative prefixes from the REALPATH of home", () => {
+    // Candidates are realpath'd before this list is consulted, so a $HOME that is itself a
+    // symlink made every home-relative entry unmatchable — the credential dirs and, on
+    // macOS, ~/Library. `tooBroadRoot` realpathed home; `systemPrefixes` did not.
+    //
+    // This needs a genuinely SYMLINKED home. The first version of it passed `realpathSync(home)`
+    // — and the fixture home is already realpath'd, so every assertion held whether or not
+    // the code called `real()`: deleting the fix left the whole suite green. A test for a
+    // credential fence that cannot fail is worse than no test, because it reads as cover.
+    const realHome = join(symBase, "real-home");
+    mkdirSync(join(realHome, ".ssh"), { recursive: true });
+    writeFileSync(join(realHome, ".ssh", "id_rsa"), "KEY\n");
+    const linkHome = join(symBase, "home-link");
+    symlinkSync(realHome, linkHome);
+
+    // the prefixes must name the RESOLVED directory, because that is what a candidate
+    // realpaths to
+    expect(systemPrefixes("darwin", linkHome)).toContain(join(realHome, ".ssh"));
+    expect(systemPrefixes("darwin", linkHome)).toContain(join(realHome, "Library"));
+    expect(isSystemPath(join(realHome, ".ssh", "id_rsa"), "darwin", linkHome)).toBe(true);
+    // …end to end: the key is unreachable through the symlinked spelling too
+    expect(resolveLocFile("id_rsa", join(linkHome, ".ssh"), [], linkHome, false, "darwin")).toBeNull();
+    expect(resolveLocFile(join(linkHome, ".ssh", "id_rsa"), null, [], linkHome, true, "darwin")).toBeNull();
+    // …and the TWIN: `deniedExceptions` got the same `real(home)` fix and no assertion, so
+    // mutating it back left the suite green. Its failure is the other direction — the four
+    // code subtrees stop being reachable, which silently turns "Open in editor" off for the
+    // plugin's own source and the user's skills and agents when $HOME is a symlink.
+    mkdirSync(join(realHome, ".claude", "plugins"), { recursive: true });
+    expect(deniedExceptions(linkHome)).toContain(join(realHome, ".claude", "plugins"));
+    expect(isSystemPath(join(realHome, ".claude", "plugins", "codeatlas", "x.ts"), "darwin", linkHome)).toBe(false);
+    expect(isSystemPath(join(realHome, ".claude", "history.jsonl"), "darwin", linkHome)).toBe(true);
+  });
+
+  it("folds case at the ALLOW fence too — the one place folding is the PERMISSIVE direction", () => {
+    // Every other folding site is a deny-list, where being case-sensitive would be a
+    // BYPASS. This one decides "the file is inside a root", where folding is what lets a
+    // differently-cased spelling through — and it had no test at all: forcing it to "linux"
+    // left the whole suite green. It has to fold, because on macOS and Windows a mis-cased
+    // root really is the same directory and `realpathSync` canonicalises neither; the file
+    // itself is still realpath'd and still deny-listed first, and the root is supplied by
+    // whoever runs the viewer, not by the graph.
+    const projRoot = join(outside, "Proj");
+    mkdirSync(projRoot, { recursive: true });
+    writeFileSync(join(projRoot, "App.tsx"), "x\n");
+    const shouted = join(outside, "PROJ"); // the same directory on macOS/Windows, other spelling
+    const target = realpathSync(join(projRoot, "App.tsx"));
+    expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "darwin")).toBe(target);
+    expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "win32")).toBe(target);
+    // …and on a case-SENSITIVE platform the two are genuinely different directories.
+    // Host-bound `relative()` folds case on Windows whatever `os` says (see the fold-case
+    // test above), so this half only has meaning off Windows.
+    if (platform() !== "win32") expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "linux")).toBeNull();
+    expect(resolveLocFile(target, null, [projRoot], FAKE_HOME, false, "linux")).toBe(target);
+  });
+
+  it("keeps credential directories out, whatever root a graph claims", () => {
+    // `tooBroadRoot` stops a graph claiming all of $HOME; this stops one claiming ~/.ssh
+    // and pointing at id_rsa. Not exhaustive by design — it raises the floor.
+    for (const p of [".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".netrc", ".claude/settings.json"])
+      expect(isSystemPath(posix.join(FAKE_HOME, p), "darwin", FAKE_HOME), p).toBe(true);
+    expect(isSystemPath(posix.join(FAKE_HOME, "dev/app/.sshconfig"), "darwin", FAKE_HOME)).toBe(false); // not a prefix match
+  });
+
+  it("denies ~/.claude as a DIRECTORY, exempting only the code subtrees", () => {
+    // The documented install puts this checkout under `~/.claude/plugins/…`, and the
+    // launcher starts vite from inside it, so DEFAULT_ROOTS[0] is that directory: denying
+    // the whole tree turned "Open in editor" off for the plugin's own source and for the
+    // user's skills and agents. Enumerating the SECRETS instead was worse — it left
+    // history.jsonl (every prompt typed), settings.local.json and projects/**/*.jsonl
+    // reachable, because that list is open-ended. The exemption list is closed.
+    for (const p of [
+      ".claude/plugins/codeatlas/viewer/src/App.tsx",
+      ".claude/skills/mine/SKILL.md",
+      ".claude/agents/x.md",
+      ".claude/commands/x.md",
+    ])
+      expect(isSystemPath(posix.join(FAKE_HOME, p), "darwin", FAKE_HOME), p).toBe(false);
+    for (const p of [
+      ".claude/settings.json",
+      ".claude/settings.local.json",
+      ".claude/.credentials.json",
+      ".claude/history.jsonl",
+      ".claude/projects/some-project/abc.jsonl",
+      ".claude/todos/x.json",
+    ])
+      expect(isSystemPath(posix.join(FAKE_HOME, p), "darwin", FAKE_HOME), p).toBe(true);
+    // the exemption is a path prefix, not a name match
+    expect(isSystemPath(posix.join(FAKE_HOME, ".claude", "plugins-backup", "x"), "darwin", FAKE_HOME)).toBe(true);
+    expect(deniedExceptions(FAKE_HOME, "darwin")).toContain(posix.join(FAKE_HOME, ".claude", "plugins"));
+  });
+
+  it("refuses a root= too broad to bound anything", () => {
+    for (const broad of ["/", home, join(home, ".."), resolve("/")])
+      expect(tooBroadRoot(realpathSync(broad), home), broad).toBe(true);
+    for (const ok of [repo, other, outside]) expect(tooBroadRoot(ok, home), ok).toBe(false);
+    // A bare drive root is the same `abs === dirname(abs)` identity, but only under
+    // win32 path semantics — node's `dirname("C:\\")` is "." on POSIX. CI runs this
+    // suite on windows-latest, which is where the assertion has meaning.
+    if (platform() === "win32") {
+      expect(tooBroadRoot("C:\\", "D:\\fake-home\\u")).toBe(true);
+      expect(tooBroadRoot("C:\\Users", "C:\\Users\\u")).toBe(true);
+      expect(tooBroadRoot("C:\\dev\\app", "C:\\Users\\u")).toBe(false);
+    }
+  });
+
+  it("drops such a root instead of resolving against it", () => {
+    expect(allowedRoots("/", [repo], home)).toEqual([repo]);
+    expect(allowedRoots(home, [repo], home)).toEqual([repo]);
+    // …and the file it was reaching for stays unreachable
+    expect(resolveLocFile(join(other, "note.md"), "/", [repo], home)).toBeNull();
+    expect(resolveLocFile(join(other, "note.md"), home, [repo], home)).toBeNull();
+    // a real project directory is unaffected — that is the whole point of the deny-list
+    expect(resolveLocFile(join(other, "note.md"), other, [repo], home)).toBe(join(other, "note.md"));
+  });
+
+  it("still lets an OPERATOR widen the fence — CODEATLAS_ROOTS and CODEATLAS_OPEN_HOME", () => {
+    // configured by whoever runs the viewer, not asserted by the graph on screen
+    expect(resolveLocFile("note.md", null, [repo, other], home)).toBe(join(other, "note.md"));
+    expect(resolveLocFile(join(other, "note.md"), "/", [repo], home, true)).toBe(join(other, "note.md"));
   });
 });
 
@@ -332,6 +520,14 @@ describe("dev server binding", () => {
       for (const lan of lanAddresses()) {
         await expect(fetch(`http://${lan}:${port}/`, { signal: AbortSignal.timeout(2000) })).rejects.toThrow();
       }
+      // `/theme.css` with no theme file installed is the NORMAL case and must be an empty
+      // 200 stylesheet, not a 404: index.html links it unconditionally, so a 404 is a red
+      // console error on every page load. Nothing pinned that — reverting it left the suite
+      // green — and this test already has the real server booted.
+      const theme = await fetch(`http://127.0.0.1:${port}/theme.css`);
+      expect(theme.status).toBe(200);
+      expect(theme.headers.get("content-type")).toMatch(/text\/css/);
+      expect(await theme.text()).toMatch(/no user theme installed/);
     } finally {
       await server.close();
       if (saved.live !== undefined) process.env.CODEATLAS_LIVE_DIR = saved.live;

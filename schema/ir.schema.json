@@ -221,6 +221,10 @@
           "inferred": {
             "type": "boolean",
             "description": "Edges only: true when the relation was inferred (dynamic dispatch, convention, reading between the lines) rather than seen at a verified loc. The viewer renders inferred edges dashed with a '?' marker — the honesty rule."
+          },
+          "feedback": {
+            "type": "boolean",
+            "description": "Edges only: this edge closes a cycle and the author wants it drawn UPWARD (a retry, a backorder, a 'payment failed' return path). ELK is fed it reversed so the mainline keeps flowing down and the layout engine does not pick which edge of the cycle to break; the drawn arrow keeps the authored direction."
           }
         },
         "additionalProperties": true
