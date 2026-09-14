@@ -539,7 +539,10 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   `file://` URL (`new URL("../x.mjs", import.meta.url).href`), never a bare absolute path —
   the ESM loader rejects `C:\…` with "Received protocol 'c:'", which is how `schema2ir`'s
   self-check silently never ran on Windows until 2026-09-12; test-only directory links use
-  `symlinkSync(…, "junction")` on win32 (no privilege needed), file symlinks skip without
+  `symlinkSync(…, "junction")` on win32 (no privilege needed); vite refuses to serve any path
+  containing `~` on Windows (8.3 short-name hardening), so a test that copies the viewer
+  under TEMP expands the path with `realpathSync.native` first — GitHub's runner keeps TEMP
+  under `C:\Users\RUNNER~1` and served nothing on the first CI run; file symlinks skip without
   Developer Mode or elevation, FIFO tests skip, the unreadable-dir test uses `icacls`; and a
   fence test that injects a foreign `os` can only assert what the HOST's `node:path` can
   express (win32 `relative()` folds case whatever `os` says), so case-SENSITIVE assertions

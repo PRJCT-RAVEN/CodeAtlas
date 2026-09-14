@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, symlinkSync, cpSync, utimesSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, symlinkSync, cpSync, utimesSync, chmodSync, realpathSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -232,7 +232,11 @@ test("a failed dependency update keeps the install that was already working", { 
 
 /** A throwaway copy of the plugin whose node_modules are linked to the real ones. */
 function fakePluginRoot() {
-  const root = mkdtempSync(join(tmpdir(), "codeatlas-uninstall-"));
+  // Long-name form on purpose: vite refuses to serve ANY path containing "~" on Windows
+  // (8.3 short-name hardening), and GitHub's Windows runner keeps TEMP under
+  // C:\Users\RUNNER~1 — the copied viewer answered every probe with "outside of Vite
+  // serving allow list" on the first CI run (2026-09-14). `realpathSync.native` expands it.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "codeatlas-uninstall-")));
   const repo = join(here, "../..");
   for (const part of ["bin", "viewer", "schema", ".claude-plugin"]) {
     cpSync(join(repo, part), join(root, part), {

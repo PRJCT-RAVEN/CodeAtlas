@@ -1,7 +1,7 @@
 // /open endpoint resolution + request gate, and the dev server's loopback bind
 // (viewer/vite.config.ts).
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
 import { platform, tmpdir, networkInterfaces } from "node:os";
 import { join, resolve, posix, win32 } from "node:path";
 import { realpathSync } from "node:fs";
@@ -340,23 +340,32 @@ describe("system-path fence", () => {
     writeFileSync(join(realHome, ".ssh", "id_rsa"), "KEY\n");
     const linkHome = join(symBase, "home-link");
     symlinkSync(realHome, linkHome);
+    // Describe the HOST platform: `systemPrefixes` composes with the described platform's
+    // separator, so describing darwin on a Windows host yields `C:\…\real-home/.ssh` and
+    // no host-joined expectation can match it. This only ever ran on Windows once CI's
+    // elevated runner could create the symlink (the hands-on box could not).
+    const os = platform() === "win32" ? "win32" : "darwin";
+    const j = (os === "win32" ? win32 : posix).join;
+    // What the code must arrive at BY ITSELF from the symlinked spelling: still a real
+    // test, because without `real()` the prefixes would be built on `linkHome`.
+    const resolved = realpathSync(linkHome);
 
     // the prefixes must name the RESOLVED directory, because that is what a candidate
     // realpaths to
-    expect(systemPrefixes("darwin", linkHome)).toContain(join(realHome, ".ssh"));
-    expect(systemPrefixes("darwin", linkHome)).toContain(join(realHome, "Library"));
-    expect(isSystemPath(join(realHome, ".ssh", "id_rsa"), "darwin", linkHome)).toBe(true);
+    expect(systemPrefixes(os, linkHome)).toContain(j(resolved, ".ssh"));
+    expect(systemPrefixes(os, linkHome)).toContain(j(resolved, os === "win32" ? "AppData" : "Library"));
+    expect(isSystemPath(join(resolved, ".ssh", "id_rsa"), os, linkHome)).toBe(true);
     // …end to end: the key is unreachable through the symlinked spelling too
-    expect(resolveLocFile("id_rsa", join(linkHome, ".ssh"), [], linkHome, false, "darwin")).toBeNull();
-    expect(resolveLocFile(join(linkHome, ".ssh", "id_rsa"), null, [], linkHome, true, "darwin")).toBeNull();
+    expect(resolveLocFile("id_rsa", join(linkHome, ".ssh"), [], linkHome, false, os)).toBeNull();
+    expect(resolveLocFile(join(linkHome, ".ssh", "id_rsa"), null, [], linkHome, true, os)).toBeNull();
     // …and the TWIN: `deniedExceptions` got the same `real(home)` fix and no assertion, so
     // mutating it back left the suite green. Its failure is the other direction — the four
     // code subtrees stop being reachable, which silently turns "Open in editor" off for the
     // plugin's own source and the user's skills and agents when $HOME is a symlink.
     mkdirSync(join(realHome, ".claude", "plugins"), { recursive: true });
-    expect(deniedExceptions(linkHome)).toContain(join(realHome, ".claude", "plugins"));
-    expect(isSystemPath(join(realHome, ".claude", "plugins", "codeatlas", "x.ts"), "darwin", linkHome)).toBe(false);
-    expect(isSystemPath(join(realHome, ".claude", "history.jsonl"), "darwin", linkHome)).toBe(true);
+    expect(deniedExceptions(linkHome, os)).toContain(j(resolved, ".claude", "plugins"));
+    expect(isSystemPath(join(resolved, ".claude", "plugins", "codeatlas", "x.ts"), os, linkHome)).toBe(false);
+    expect(isSystemPath(join(resolved, ".claude", "history.jsonl"), os, linkHome)).toBe(true);
   });
 
   it("folds case at the ALLOW fence too — the one place folding is the PERMISSIVE direction", () => {
@@ -372,8 +381,12 @@ describe("system-path fence", () => {
     writeFileSync(join(projRoot, "App.tsx"), "x\n");
     const shouted = join(outside, "PROJ"); // the same directory on macOS/Windows, other spelling
     const target = realpathSync(join(projRoot, "App.tsx"));
-    expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "darwin")).toBe(target);
-    expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "win32")).toBe(target);
+    // Only a case-insensitive host filesystem has `shouted` as a directory at all; on
+    // Linux CI it does not exist and no fold could let it through (first CI run, 2026-09-14).
+    if (existsSync(shouted)) {
+      expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "darwin")).toBe(target);
+      expect(resolveLocFile(target, null, [shouted], FAKE_HOME, false, "win32")).toBe(target);
+    }
     // …and on a case-SENSITIVE platform the two are genuinely different directories.
     // Host-bound `relative()` folds case on Windows whatever `os` says (see the fold-case
     // test above), so this half only has meaning off Windows.
