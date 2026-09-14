@@ -5,9 +5,9 @@ below is the surface that CI does not cover on Windows; the Swift analyzer is ma
 skip `analyzer/` entirely.
 
 This kit used to be handed over as a loose folder outside git, which let its copy of
-`order-pipeline.json` drift behind `docs/examples/` (see
-`docs/audit/2026-09-07-windows-handoff.md`). It now lives in the repo so that cannot happen
-again: the order-pipeline graph is referenced from `docs/examples/`, never duplicated here.
+`order-pipeline.json` drift behind `docs/examples/`. It now lives in the repo so that cannot
+happen again: the order-pipeline graph is referenced from `docs/examples/`, never duplicated
+here.
 
 Prereqs: Node ≥ 20 on PATH (`node --version`) and a clone of the repo.
 
@@ -208,7 +208,7 @@ should stay responsive.
 ## Reporting
 
 For each section: PASS, or the exact command plus observed versus expected output, with the
-Windows and Node versions. File the report next to the previous one in `docs/audit/`.
+Windows and Node versions. Send the report to the maintainer rather than committing it.
 
 Known-suspect areas: backslashes leaking into ids or locs, `taskkill` tree kill, the `.cmd` shim
 quoting args with spaces, batch shims needing `cmd.exe` to spawn at all, `;` versus `:` in

@@ -12,7 +12,7 @@ Project specification v0.1 — 2026-07-18. Intended audience: coding agents and 
 >    golden packages and the requirements that depend on them (F1–F3, N1, and the
 >    analyzer half of §7) are no longer implemented. Nothing shipped reached it, and it
 >    was costing a macOS CI job and a steady sync tax. The source is archived outside the
->    repo and remains in git history — see `docs/audit/2026-09-10-predeploy-audit.md`.
+>    repo.
 >    Mechanical graph production is now `tools/fs2ir.mjs` (directory trees) and
 >    `tools/schema2ir.mjs` (database schemas).
 >

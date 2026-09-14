@@ -1,7 +1,7 @@
 // The live loop (App.tsx `pollOnce`) — the product's core promise, and until
-// 2026-09-10 the one thing with no test at all: every regression listed in
-// docs/audit/2026-09-05-plugin-review.md ("a transient 404 swapped in the
-// sample graph") lived in these branches.
+// 2026-09-10 the one thing with no test at all: every regression the 2026-09-05
+// plugin review listed ("a transient 404 swapped in the sample graph") lived in
+// these branches.
 
 import { describe, it, expect } from "vitest";
 import { RENDER_WARN } from "../src/ir/budget";

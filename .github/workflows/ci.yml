@@ -123,11 +123,21 @@ jobs:
         working-directory: schema
       - name: Every shipped graph validates
         run: node schema/validate.mjs viewer/public/sample-graph.json docs/examples/*.graph.json
+      # Two arms: POSIX home paths, and Windows profile paths whose user name is not one of
+      # the placeholders the tests and SKILL.md use (`u`, `First Last`, `<user>`). Each
+      # pattern is written so that this file does not match itself.
       - name: No personal paths in shipped files
         run: |
+          fail=0
           if git ls-files | xargs grep -l '/Users/[a-z]' 2>/dev/null; then
-            echo "::error::a shipped file contains an absolute personal path"; exit 1
+            echo "::error::a shipped file contains an absolute personal path"; fail=1
           fi
+          names=$(git ls-files | xargs grep -ohE '[A-Za-z]:\\+[Uu]sers\\+[^\\[:space:]"'"'"'`|);]+' 2>/dev/null \
+            | sed -E 's/^[A-Za-z]:\\+[Uu]sers\\+//' | sort -u | grep -vxE 'u|First|<user>' || true)
+          if [ -n "$names" ]; then
+            echo "::error::a shipped file contains a Windows profile path for: $names"; fail=1
+          fi
+          exit $fail
       - name: Launcher shims are executable and LF where they must be
         run: |
           test -x bin/codeatlas-viewer || { echo "::error::bin/codeatlas-viewer is not executable"; exit 1; }

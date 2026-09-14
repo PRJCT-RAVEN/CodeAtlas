@@ -530,9 +530,8 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   per-platform defaults. CI runs the viewer, tools and schema suites on a
   ubuntu+windows matrix, plus a `package` job (manifest versions agree, every shipped graph
   validates, no personal paths, shims runnable), an `audit` job and a Windows shim check;
-  the hands-on Windows 11 passes are
-  `docs/audit/2026-09-07-windows-test.md` (0.2.0) and `docs/audit/2026-09-12-windows-test.md`
-  (0.3.0, this tree). Windows specifics: `code` on PATH is
+  hands-on Windows 11 passes were run on 2026-09-07 (0.2.0) and 2026-09-12 (0.3.0, this
+  tree). Windows specifics: `code` on PATH is
   `code.cmd`, so an editor command that resolves to a batch file runs through `cmd.exe`
   (`spawnDetached` in `viewer/vite.config.ts`); npm test scripts must double-quote globs
   (cmd.exe keeps single quotes and `node --test` then runs zero tests with exit 0 — CI now
@@ -681,10 +680,10 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   the view (which question, which nodes) and ALWAYS runs `node schema/validate.mjs` on the
   subagent's output before publishing to `live/graph.json` — the validator is the safety
   net that makes cheap models safe here.
-- **Audits**: `docs/audit/` holds the 2026-08-27 build audit (problem list + status);
-  add to it rather than re-deriving the same findings.
-- Personal conventions (task tracker, machine paths) live in `CLAUDE.local.md`, which is
-  gitignored — never put them here; this file ships with the plugin.
+- **Audits**: audit reports and work logs are not kept in this repo — never add them under
+  `docs/`. The CI `package` job refuses home and profile paths in shipped files.
+- Personal conventions live in `CLAUDE.local.md`, which is gitignored — never put them
+  here; this file ships with the plugin.
 
 ## View design guidance
 
