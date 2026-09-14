@@ -233,8 +233,8 @@ test("a failed dependency update keeps the install that was already working", { 
 /** A throwaway copy of the plugin whose node_modules are linked to the real ones. */
 function fakePluginRoot() {
   // Long-name form on purpose: vite refuses to serve ANY path containing "~" on Windows
-  // (8.3 short-name hardening), and GitHub's Windows runner keeps TEMP under
-  // C:\Users\RUNNER~1 — the copied viewer answered every probe with "outside of Vite
+  // (8.3 short-name hardening), and GitHub's Windows runner keeps TEMP under an 8.3
+  // short-name profile path — the copied viewer answered every probe with "outside of Vite
   // serving allow list" on the first CI run (2026-09-14). `realpathSync.native` expands it.
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "codeatlas-uninstall-")));
   const repo = join(here, "../..");
