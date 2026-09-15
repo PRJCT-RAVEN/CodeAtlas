@@ -14,7 +14,7 @@ Two mechanical importers cover the cases too big to read by hand — `tools/fs2i
 
 - Operating manual for sessions driving the viewer: [`CLAUDE.md`](../CLAUDE.md)
 - The contract: [`schema/README.md`](../schema/README.md), [`schema/ir.schema.json`](../schema/ir.schema.json)
-- Original design spec (historical): [`PROJECT_SPEC.md`](../PROJECT_SPEC.md)
+- Original design spec (historical): [`DESIGN_HISTORY.md`](../DESIGN_HISTORY.md)
 
 ---
 

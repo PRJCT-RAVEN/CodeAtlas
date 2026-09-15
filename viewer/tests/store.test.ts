@@ -140,7 +140,7 @@ describe("store across polls", () => {
   });
 });
 
-// PROJECT_SPEC §3(C)/N4 wanted a hard cap that force-collapses. The budget does that
+// DESIGN_HISTORY §3(C)/N4 wanted a hard cap that force-collapses. The budget does that
 // for a graph as it ARRIVES; a user can still expand past it afterwards, and undoing
 // the click they just made would be hostile — so the viewer warns and offers this.
 describe("collapseToFit", () => {

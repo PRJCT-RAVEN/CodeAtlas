@@ -467,7 +467,7 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   already folded the only container and nothing is left to fold. The click then changes
   nothing at all; it used to relayout anyway and throw away wherever the user had panned. The automatic pass never revisits a
   container the user opened — undoing their click would be hostile — so this is the
-  on-demand form of PROJECT_SPEC §3(C)/N4's forced-collapse cap.
+  on-demand form of DESIGN_HISTORY §3(C)/N4's forced-collapse cap.
 - **Polling** is conditional (ETag → 304; `/live` cap 256 MB): an unchanged 25 MB graph
   costs one 304 per second. **Search** counts matches inside collapsed containers ("+N
   hidden") and keeps their container lit. Above 800 visible nodes node shadows are dropped

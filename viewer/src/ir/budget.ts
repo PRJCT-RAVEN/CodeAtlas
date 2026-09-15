@@ -46,7 +46,7 @@ export const DEFAULT_BUDGET: BudgetOptions = { maxVisible: VIEW_NODE_CAP, maxEdg
 /**
  * Above this many VISIBLE nodes the viewer says so and offers to collapse back.
  *
- * PROJECT_SPEC §3(C)/N4 asked for a hard cap that force-collapses instead of
+ * DESIGN_HISTORY §3(C)/N4 asked for a hard cap that force-collapses instead of
  * rendering. The budget already does that for a graph as it ARRIVES; the gap this
  * fills is a user expanding their way past it afterwards. Forcing a collapse there
  * would undo the click the user just made, so this warns and offers the action
