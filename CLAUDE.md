@@ -532,7 +532,10 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   validates, no personal paths, shims runnable), an `audit` job and a Windows shim check;
   hands-on Windows 11 passes were run on 2026-09-07 (0.2.0) and 2026-09-12 (0.3.0); the
   short form for an agent testing a change on the Windows box is
-  `docs/testing/windows-kit/AGENT-RUNBOOK.md`. Windows specifics: `code` on PATH is
+  `docs/testing/windows-kit/AGENT-RUNBOOK.md`. vitest's `testTimeout` is 60 s (the `test`
+  key in `viewer/vite.config.ts`): the layout suites take up to ~5 s per test on a laptop and
+  the shared Windows runner is ~5x slower, so two of them timed out at the 5 s default on the
+  third public CI run. Windows specifics: `code` on PATH is
   `code.cmd`, so an editor command that resolves to a batch file runs through `cmd.exe`
   (`spawnDetached` in `viewer/vite.config.ts`); npm test scripts must double-quote globs
   (cmd.exe keeps single quotes and `node --test` then runs zero tests with exit 0 — CI now

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig, type Plugin, type Connect } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -784,4 +785,9 @@ export default defineConfig({
     ...(liveDir ? [uninstallWatchdog(resolve(viewerDir, "..", ".claude-plugin", "plugin.json"))] : []),
     ...(logFile ? [logRotator(logFile)] : []),
   ],
+  // vitest reads this; vite ignores it. The layout suites run real ELK passes and the
+  // slowest single test takes ~5 s on a laptop, right at vitest's 5 s default; GitHub's
+  // shared Windows runner measured ~5x slower and timed two of them out on the third public
+  // CI run (2026-09-14). A hang still fails, a slow runner no longer does.
+  test: { testTimeout: 60_000, hookTimeout: 60_000 },
 });
