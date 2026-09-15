@@ -607,7 +607,7 @@ The repo root is the plugin root; `.claude-plugin/plugin.json` is the manifest a
 `.claude-plugin/marketplace.json` lists the plugin itself (`source: "./"`), so users run
 `/plugin marketplace add <owner>/<repo>` then `/plugin install codeatlas@codeatlas`.
 The version lives in BOTH manifests and they must stay equal — bump them together on every
-shipped change (currently 0.3.1). `claude plugin validate` does NOT check this; CI's
+shipped change (currently 0.3.2). `claude plugin validate` does NOT check this; CI's
 `package` job and `tools/test/manifests.test.mjs` do.
 Shipped components — keep them portable (no personal paths, no macOS-only assumptions
 without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):

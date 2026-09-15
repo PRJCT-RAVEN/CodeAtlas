@@ -10,7 +10,7 @@
       "name": "codeatlas",
       "source": "./",
       "description": "Ask a question about any codebase; Claude draws the answer in a local viewer with every node linked to file:line.",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "keywords": [
         "diagram",
         "architecture",
