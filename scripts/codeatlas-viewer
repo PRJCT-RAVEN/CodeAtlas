@@ -1,6 +1,6 @@
 #!/bin/sh
-# codeatlas-viewer — POSIX shim for bin/codeatlas-viewer.mjs (the launcher itself;
-# Windows users get bin/codeatlas-viewer.cmd). Requires Node.js >= 20 on PATH.
+# codeatlas-viewer — POSIX shim for scripts/codeatlas-viewer.mjs (the launcher itself;
+# Windows users get scripts/codeatlas-viewer.cmd). Requires Node.js >= 20 on PATH.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # Only REPAIR a PATH that has no node at all (a GUI- or launchd-spawned environment

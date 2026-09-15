@@ -1,4 +1,4 @@
-// bin/codeatlas-viewer.mjs: paths/status without a server, then a real start/stop on a free port.
+// scripts/codeatlas-viewer.mjs: paths/status without a server, then a real start/stop on a free port.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import net from "node:net";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const LAUNCHER = join(here, "../../bin/codeatlas-viewer.mjs");
+const LAUNCHER = join(here, "../../scripts/codeatlas-viewer.mjs");
 const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
 const run = (args, env) => spawnSync("node", [LAUNCHER, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
 
@@ -107,7 +107,7 @@ test("start → status → stop on a free port", { timeout: 120_000 }, async (t)
 });
 
 test("pid verification accepts only this plugin's vite on this port", async () => {
-  const { isOurVite } = await import("../../bin/codeatlas-viewer.mjs");
+  const { isOurVite } = await import("../../scripts/codeatlas-viewer.mjs");
   const vite = "/plug/viewer/node_modules/vite/bin/vite.js";
   assert.equal(isOurVite(`/usr/bin/node ${vite} --strictPort --port 5173`, vite, 5173), true);
   assert.equal(isOurVite(`node C:\\plug\\viewer\\node_modules\\vite\\bin\\vite.js --strictPort --port 5173`, "C:\\plug\\viewer\\node_modules\\vite\\bin\\vite.js", 5173), true);
@@ -194,11 +194,11 @@ test("a failed dependency update keeps the install that was already working", { 
         "node_modules/left-pad": { version: "1.3.0", resolved: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz", integrity: "sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA==" } },
     }));
   }
-  mkdirSync(join(root, "bin"), { recursive: true });
-  cpSync(LAUNCHER, join(root, "bin", "codeatlas-viewer.mjs"));
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  cpSync(LAUNCHER, join(root, "scripts", "codeatlas-viewer.mjs"));
   const data = mkdtempSync(join(tmpdir(), "codeatlas-fakedata-"));
   const cache = mkdtempSync(join(tmpdir(), "codeatlas-emptycache-"));
-  const r = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "install"], {
+  const r = spawnSync("node", [join(root, "scripts", "codeatlas-viewer.mjs"), "install"], {
     encoding: "utf8",
     env: { ...process.env, CODEATLAS_DATA: data,
       npm_config_registry: "http://127.0.0.1:9", npm_config_cache: cache, npm_config_offline: "true" },
@@ -219,7 +219,7 @@ test("a failed dependency update keeps the install that was already working", { 
   // and it must keep saying so afterwards: a `start` from days ago is long gone
   // from the scrollback, so the state is recorded in the data dir
   assert.ok(existsSync(join(data, "deps-stale.json")), "the stale state must be recorded");
-  const later = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "status"], {
+  const later = spawnSync("node", [join(root, "scripts", "codeatlas-viewer.mjs"), "status"], {
     encoding: "utf8",
     env: { ...process.env, CODEATLAS_DATA: data, CODEATLAS_PORT: "59999" },
   });
@@ -238,7 +238,7 @@ function fakePluginRoot() {
   // serving allow list" on the first CI run (2026-09-14). `realpathSync.native` expands it.
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "codeatlas-uninstall-")));
   const repo = join(here, "../..");
-  for (const part of ["bin", "viewer", "schema", ".claude-plugin"]) {
+  for (const part of ["scripts", "viewer", "schema", ".claude-plugin"]) {
     cpSync(join(repo, part), join(root, part), {
       recursive: true,
       filter: (src) => !src.includes("node_modules") && !/[\\/]\.git(?:[\\/]|$)/.test(src),
@@ -262,7 +262,7 @@ test("an uninstalled plugin does not leave the viewer running", { timeout: 180_0
   const data = mkdtempSync(join(tmpdir(), "codeatlas-uninstall-data-"));
   const port = await freePort();
   const env = { ...process.env, CODEATLAS_DATA: data, CODEATLAS_PORT: String(port), CODEATLAS_UNINSTALL_CHECK_MS: "500" };
-  const started = spawnSync("node", [join(root, "bin", "codeatlas-viewer.mjs"), "start"], { encoding: "utf8", env });
+  const started = spawnSync("node", [join(root, "scripts", "codeatlas-viewer.mjs"), "start"], { encoding: "utf8", env });
   assert.equal(started.status, 0, started.stderr);
   const pid = Number(readFileSync(join(data, "viewer.pid"), "utf8").trim());
   const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -306,8 +306,8 @@ setTimeout(() => server.listen(port, "127.0.0.1"), ${listenDelayMs});
 `
   );
   mkdirSync(join(root, "schema", "node_modules", "ajv"), { recursive: true });
-  mkdirSync(join(root, "bin"), { recursive: true });
-  cpSync(LAUNCHER, join(root, "bin", "codeatlas-viewer.mjs"));
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  cpSync(LAUNCHER, join(root, "scripts", "codeatlas-viewer.mjs"));
   for (const part of ["viewer", "schema"]) {
     writeFileSync(join(root, part, "package.json"), JSON.stringify({ name: `stub-${part}`, version: "1.0.0" }));
     writeFileSync(join(root, part, "package-lock.json"), "{}\n");
@@ -327,7 +327,7 @@ function touchLocks(root, { lockAgeS, installedAgeS }) {
 }
 
 const runIn = (root, args, env) =>
-  spawnSync(process.execPath, [join(root, "bin", "codeatlas-viewer.mjs"), ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+  spawnSync(process.execPath, [join(root, "scripts", "codeatlas-viewer.mjs"), ...args], { encoding: "utf8", env: { ...process.env, ...env } });
 
 // `open` spawns the platform opener detached and unref'd — which does NOT suppress the
 // 'error' event a failed spawn emits, so on a box with no opener (headless Linux, a
@@ -365,7 +365,7 @@ test("two concurrent starts serialise instead of racing for the port", { timeout
   const both = ["a", "b"].map(
     () =>
       new Promise((done) => {
-        const p = spawn(process.execPath, [join(root, "bin", "codeatlas-viewer.mjs"), "start"], { env });
+        const p = spawn(process.execPath, [join(root, "scripts", "codeatlas-viewer.mjs"), "start"], { env });
         let out = "";
         p.stdout.on("data", (d) => (out += d));
         p.stderr.on("data", (d) => (out += d));
@@ -444,13 +444,13 @@ test("a dependency change under a running viewer is reported, and `restart` appl
   }
 });
 
-// The shims are what the skills actually invoke (`${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer`),
+// The shims are what the skills actually invoke (`${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer`),
 // and nothing in the repo ever ran one: a lost exec bit or a broken line would have shipped
 // green. macOS/Linux runs the sh shim for real; the .cmd is checked byte-wise everywhere.
 test("the POSIX shim runs the launcher", { skip: process.platform === "win32" }, async () => {
   const data = mkdtempSync(join(tmpdir(), "codeatlas-shim-"));
   const port = await freePort();
-  const r = spawnSync(join(ROOT, "bin", "codeatlas-viewer"), ["paths"], {
+  const r = spawnSync(join(ROOT, "scripts", "codeatlas-viewer"), ["paths"], {
     encoding: "utf8",
     env: { ...process.env, CODEATLAS_DATA: data, CODEATLAS_PORT: String(port) },
   });
@@ -471,7 +471,7 @@ test("the POSIX shim does not demote the node already on PATH", { skip: process.
   chmodSync(shadow, 0o755);
   const data = mkdtempSync(join(tmpdir(), "codeatlas-shim-"));
   const port = await freePort();
-  const r = spawnSync(join(ROOT, "bin", "codeatlas-viewer"), ["paths"], {
+  const r = spawnSync(join(ROOT, "scripts", "codeatlas-viewer"), ["paths"], {
     encoding: "utf8",
     env: {
       ...process.env,
@@ -489,7 +489,7 @@ test("the POSIX shim does not demote the node already on PATH", { skip: process.
 });
 
 test("the shims stay executable and cmd-parsable", () => {
-  const mode = spawnSync("git", ["ls-files", "-s", "bin/codeatlas-viewer", "bin/codeatlas-viewer.mjs"], { cwd: ROOT, encoding: "utf8" });
+  const mode = spawnSync("git", ["ls-files", "-s", "scripts/codeatlas-viewer", "scripts/codeatlas-viewer.mjs"], { cwd: ROOT, encoding: "utf8" });
   // A silent skip when git is missing or the tree is not a checkout meant the two cases
   // this guard exists for — a lost exec bit reaching the index — passed it unexamined.
   assert.equal(mode.status, 0, `git could not report the tracked modes, so nothing here was checked: ${mode.stderr}`);
@@ -497,7 +497,7 @@ test("the shims stay executable and cmd-parsable", () => {
   assert.equal(lines.length, 2, `both shims must be tracked; git listed ${lines.length}`);
   // the working tree can fake modes; the index is what a plugin user checks out
   for (const line of lines) assert.match(line, /^100755 /, `${line.split("\t")[1]} must be committed executable`);
-  const cmd = readFileSync(join(ROOT, "bin", "codeatlas-viewer.cmd"));
+  const cmd = readFileSync(join(ROOT, "scripts", "codeatlas-viewer.cmd"));
   assert.ok(!cmd.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), "a BOM makes cmd.exe echo garbage");
   const text = cmd.toString("utf8");
   assert.match(text, /node "%~dp0codeatlas-viewer\.mjs" %\*/);

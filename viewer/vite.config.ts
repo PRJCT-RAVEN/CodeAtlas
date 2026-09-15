@@ -41,7 +41,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // cannot EXECUTE — see `safeForGenericOpen` — and on macOS is forced to `open -t`.
 //
 // GET /live/<name>.json: when $CODEATLAS_LIVE_DIR is set (the plugin launcher,
-// bin/codeatlas-viewer, points it at ~/.codeatlas/live) graphs are served from
+// scripts/codeatlas-viewer, points it at ~/.codeatlas/live) graphs are served from
 // that directory instead of public/live/, so a plugin update never deletes a
 // user's views. Missing file → 404 (the poller falls through to the sample).
 const viewerDir = dirname(fileURLToPath(import.meta.url));

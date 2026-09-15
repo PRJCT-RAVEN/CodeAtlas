@@ -38,10 +38,10 @@ React Flow) — never attempt layout or coordinates yourself.
    No IPv6 on the machine → a `[codeatlas] no IPv6 loopback listener…` warning and IPv4
    keeps serving; something ELSE holding `[::1]:<port>` is fatal, because `localhost` would
    then resolve to it and reach a server that is not this viewer.
-   PLUGIN MODE (end users, see "Plugin packaging" below): `bin/codeatlas-viewer start`
+   PLUGIN MODE (end users, see "Plugin packaging" below): `scripts/codeatlas-viewer start`
    runs the same vite with `CODEATLAS_LIVE_DIR=~/.codeatlas/live`, and the `codeatlas`
    skill stages there instead of `viewer/public/live/` and publishes with
-   `bin/codeatlas-viewer publish <name> [--to <other>]` — validate and rename in ONE step,
+   `scripts/codeatlas-viewer publish <name> [--to <other>]` — validate and rename in ONE step,
    exit 1 with the errors and the draft left in place when it is not valid IR. The `mv`
    above is for this repo only: in plugin mode the live dir is outside every project and
    Claude Code refuses `mv` there outright ("may only move files to/from the allowed
@@ -530,8 +530,9 @@ what is VISIBLE, so size is governed by what is expanded, not by the file:
   per-platform defaults. CI runs the viewer, tools and schema suites on a
   ubuntu+windows matrix, plus a `package` job (manifest versions agree, every shipped graph
   validates, no personal paths, shims runnable), an `audit` job and a Windows shim check;
-  hands-on Windows 11 passes were run on 2026-09-07 (0.2.0) and 2026-09-12 (0.3.0, this
-  tree). Windows specifics: `code` on PATH is
+  hands-on Windows 11 passes were run on 2026-09-07 (0.2.0) and 2026-09-12 (0.3.0); the
+  short form for an agent testing a change on the Windows box is
+  `docs/testing/windows-kit/AGENT-RUNBOOK.md`. Windows specifics: `code` on PATH is
   `code.cmd`, so an editor command that resolves to a batch file runs through `cmd.exe`
   (`spawnDetached` in `viewer/vite.config.ts`); npm test scripts must double-quote globs
   (cmd.exe keeps single quotes and `node --test` then runs zero tests with exit 0 — CI now
@@ -603,7 +604,7 @@ The repo root is the plugin root; `.claude-plugin/plugin.json` is the manifest a
 `.claude-plugin/marketplace.json` lists the plugin itself (`source: "./"`), so users run
 `/plugin marketplace add <owner>/<repo>` then `/plugin install codeatlas@codeatlas`.
 The version lives in BOTH manifests and they must stay equal — bump them together on every
-shipped change (currently 0.3.0). `claude plugin validate` does NOT check this; CI's
+shipped change (currently 0.3.1). `claude plugin validate` does NOT check this; CI's
 `package` job and `tools/test/manifests.test.mjs` do.
 Shipped components — keep them portable (no personal paths, no macOS-only assumptions
 without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
@@ -616,8 +617,11 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
 - `agents/graph-author.md` (Sonnet) and `agents/graph-refresh.md` (Haiku) — subagents
   `codeatlas:graph-author` / `codeatlas:graph-refresh`; they validate with the plugin's
   own `schema/validate.mjs`.
-- `bin/codeatlas-viewer.mjs` — the launcher (Node, one implementation for macOS, Linux
-  and Windows; `bin/codeatlas-viewer` and `bin/codeatlas-viewer.cmd` are shims): installs
+- `scripts/codeatlas-viewer.mjs` — the launcher (Node, one implementation for macOS, Linux
+  and Windows; `scripts/codeatlas-viewer` and `scripts/codeatlas-viewer.cmd` are shims). It lives
+  in `scripts/`, NOT `bin/`: claude.ai's plugin directory rejects any plugin with a top-level
+  `bin/` ("Plugin contains a top-level bin/ directory"), and the community catalog is fed from
+  that directory — renamed 2026-09-14 for the 0.3.1 submission. The launcher installs
   `viewer/` + `schema/` deps on first run, starts vite detached on `$CODEATLAS_PORT`
   (5173) with `CODEATLAS_LIVE_DIR=$CODEATLAS_DATA/live` (`~/.codeatlas/live`), pid/log
   under the data dir, along with a self-contained `stop-viewer.sh`/`.cmd` that still works
@@ -657,7 +661,7 @@ without a fallback, every plugin path via `${CLAUDE_PLUGIN_ROOT}`):
   CI, which would need the Claude Code CLI on the runner. Then `cd viewer && npm
   test`, `cd schema && npm test`, `cd tools && npm test`; try it as a stranger with
   `claude --plugin-dir /path/to/this/repo` from some other project (headless smoke test:
-  `claude --plugin-dir <repo> --allowedTools 'Bash("<repo>/bin/codeatlas-viewer" *)' -p
+  `claude --plugin-dir <repo> --allowedTools 'Bash("<repo>/scripts/codeatlas-viewer" *)' -p
   "Use the /codeatlas:viewer skill with argument 'status'"` — the skill QUOTES the path, so
   the pattern must too; the unquoted form matches nothing and every call is denied. Write
   `<repo>` with forward slashes, which is how `${CLAUDE_PLUGIN_ROOT}` expands on Windows

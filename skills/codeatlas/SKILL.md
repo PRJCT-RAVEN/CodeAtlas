@@ -26,10 +26,10 @@ Question (if invoked with arguments): $ARGUMENTS
 
 ## The loop
 
-1. **Viewer up**: run `"${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer" start` (idempotent;
+1. **Viewer up**: run `"${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer" start` (idempotent;
    installs deps on first run; prints URL and LIVE_DIR). On a Windows shell without Git Bash
-   use `"${CLAUDE_PLUGIN_ROOT}\bin\codeatlas-viewer.cmd" start`, or
-   `node "${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer.mjs" start` anywhere. **Keep the
+   use `"${CLAUDE_PLUGIN_ROOT}\scripts\codeatlas-viewer.cmd" start`, or
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer.mjs" start` anywhere. **Keep the
    `LIVE_DIR=` line it prints** — that is where step 3 writes. Tell the user the URL the
    first time in a session. `... open` also opens the browser.
 2. **Read the code** relevant to the question. Choose nodes/edges that ANSWER THE QUESTION —
@@ -41,7 +41,7 @@ Question (if invoked with arguments): $ARGUMENTS
    the view and you validate their output before publishing.
 3. **Stage → validate → publish** (never write an unvalidated draft to the live file):
    write `<LIVE_DIR>/<name>.json` (the LIVE_DIR from step 1), then
-   `"${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer" publish <name>` — it runs the validator
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer" publish <name>` — it runs the validator
    and, only on VALID, renames the draft over `<LIVE_DIR>/graph.json` in one step (exit 0,
    prints the URL). An invalid draft is left where it is with the errors listed and nothing
    is published (exit 1); fix it and publish again. `publish <path>` takes a draft from

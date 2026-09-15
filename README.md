@@ -44,7 +44,7 @@ conversationally; each answer is a new graph rendered live.
   your own colours, copy `docs/theme.example.css` to `~/.codeatlas/theme.css` and edit the
   tokens you care about (it survives plugin updates).
 - macOS, Linux and Windows (Node.js ≥ 20; on Windows the launcher is
-  `bin\codeatlas-viewer.cmd`, or the shell shim under Git Bash / WSL). All three run the
+  `scripts\codeatlas-viewer.cmd`, or the shell shim under Git Bash / WSL). All three run the
   full suites in CI; Windows was also tested by hand on 2026-09-07 and again on 2026-09-12
   for 0.3.0 (plugin flow included) — there
   "Open in editor" uses VS Code when `code` is on PATH and Notepad otherwise, and the

@@ -1,5 +1,9 @@
 # CodeAtlas — Windows test kit
 
+> Testing a change with a Claude agent on the Windows box? Start with
+> [AGENT-RUNBOOK.md](AGENT-RUNBOOK.md); it says which of the sections below to run for
+> which kind of change and how to report. This file is the full pass.
+
 The plan for testing CodeAtlas on a real Windows box, plus the fixtures it needs. Everything
 below is the surface that CI does not cover on Windows; the Swift analyzer is macOS-only, so
 skip `analyzer/` entirely.
@@ -46,13 +50,13 @@ test skips and names what to install; it no longer installs them for you mid-run
 
 ```powershell
 cd $env:REPO
-.\bin\codeatlas-viewer.cmd paths      # prints PLUGIN_ROOT / LIVE_DIR / URL / LOG
-.\bin\codeatlas-viewer.cmd status     # expect "down", exit code 1
-.\bin\codeatlas-viewer.cmd start      # first run installs viewer+schema deps, then vite detached on :5173
-.\bin\codeatlas-viewer.cmd status     # expect running + pid, exit 0
-.\bin\codeatlas-viewer.cmd open       # browser opens http://localhost:5173/
-.\bin\codeatlas-viewer.cmd stop       # must kill the vite TREE (taskkill /T) — verify no orphan node.exe
-.\bin\codeatlas-viewer.cmd status     # exit 1 again
+.\scripts\codeatlas-viewer.cmd paths      # prints PLUGIN_ROOT / LIVE_DIR / URL / LOG
+.\scripts\codeatlas-viewer.cmd status     # expect "down", exit code 1
+.\scripts\codeatlas-viewer.cmd start      # first run installs viewer+schema deps, then vite detached on :5173
+.\scripts\codeatlas-viewer.cmd status     # expect running + pid, exit 0
+.\scripts\codeatlas-viewer.cmd open       # browser opens http://localhost:5173/
+.\scripts\codeatlas-viewer.cmd stop       # must kill the vite TREE (taskkill /T) — verify no orphan node.exe
+.\scripts\codeatlas-viewer.cmd status     # exit 1 again
 ```
 
 `paths` should report `LIVE_DIR=%USERPROFILE%\.codeatlas\live`.
@@ -177,19 +181,19 @@ permission, so it needs no `--add-dir`. Exercise it by hand too:
 
 ```powershell
 copy $env:REPO\docs\examples\order-pipeline.graph.json $env:USERPROFILE\.codeatlas\live\draft.json
-.\bin\codeatlas-viewer.cmd publish draft                 # → graph.json, exit 0, prints the URL
-.\bin\codeatlas-viewer.cmd publish "C:\some dir\d.json" --to preview   # → live\preview.json, ?graph=preview
-.\bin\codeatlas-viewer.cmd publish nothing ; echo $LASTEXITCODE          # 1, names the path it looked for
+.\scripts\codeatlas-viewer.cmd publish draft                 # → graph.json, exit 0, prints the URL
+.\scripts\codeatlas-viewer.cmd publish "C:\some dir\d.json" --to preview   # → live\preview.json, ?graph=preview
+.\scripts\codeatlas-viewer.cmd publish nothing ; echo $LASTEXITCODE          # 1, names the path it looked for
 ```
 
 An invalid draft must exit 1 with the validator's errors, stay where it was, and leave the
 live file untouched; a `--to` with anything but letters, digits, `_` and `-` exits 2.
 
 Headless smoke test — the pattern must match the skill's QUOTED command, so quote it too
-(the bare `Bash(<repo>/bin/codeatlas-viewer *)` never matches and every call is denied):
+(the bare `Bash(<repo>/scripts/codeatlas-viewer *)` never matches and every call is denied):
 
 ```powershell
-claude --plugin-dir <repo> --allowedTools 'Bash("<repo>/bin/codeatlas-viewer" *)' -p "Use the /codeatlas:viewer skill with argument 'status'"
+claude --plugin-dir <repo> --allowedTools 'Bash("<repo>/scripts/codeatlas-viewer" *)' -p "Use the /codeatlas:viewer skill with argument 'status'"
 ```
 
 Write `<repo>` with forward slashes, exactly as `${CLAUDE_PLUGIN_ROOT}` expands.

@@ -4,12 +4,12 @@ description: Start, stop, open, or check the CodeAtlas diagram viewer (http://lo
 argument-hint: [start|stop|restart|status|open|paths|publish <draft> [--to <name>]]
 ---
 
-Run `"${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer" $ARGUMENTS` (default command: `start`;
+Run `"${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer" $ARGUMENTS` (default command: `start`;
 `publish <draft> [--to <name>]` validates a staged graph and renames it over the live file in
 one step — the `codeatlas` skill's step 3 — and is the ONLY supported way to change
 `graph.json`; on
-a Windows shell without Git Bash use `"${CLAUDE_PLUGIN_ROOT}\bin\codeatlas-viewer.cmd"`, or
-`node "${CLAUDE_PLUGIN_ROOT}/bin/codeatlas-viewer.mjs"` anywhere). Keep the quotes: the
+a Windows shell without Git Bash use `"${CLAUDE_PLUGIN_ROOT}\scripts\codeatlas-viewer.cmd"`, or
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer.mjs"` anywhere). Keep the quotes: the
 plugin path contains a space on most Windows machines. Then
 report the result in one or two lines: URL, whether it was already up, and the LIVE_DIR
 where graphs go. The viewer answers on `http://localhost:<port>`, `http://127.0.0.1:<port>`

@@ -6,7 +6,7 @@
 # the `@v4` majors used in ci.yml, and no Swift package here any more.
 version: 2
 updates:
-  # viewer/ is the one that ships: `bin/codeatlas-viewer.mjs` runs `npm ci --omit=dev`
+  # viewer/ is the one that ships: `scripts/codeatlas-viewer.mjs` runs `npm ci --omit=dev`
   # here on every user's first start, so its lockfile IS the deployed artifact.
   - package-ecosystem: npm
     directory: /viewer

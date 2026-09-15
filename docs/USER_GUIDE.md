@@ -38,18 +38,18 @@ To try a checkout without installing: `claude --plugin-dir /path/to/codeatlas`.
 `/codeatlas:viewer start|stop|restart|status|open|paths|publish`, or directly:
 
 ```sh
-bin/codeatlas-viewer start     # installs deps on first run, starts vite on :5173, prints paths
-bin/codeatlas-viewer status    # up/down + pid (exit 1 when down)
-bin/codeatlas-viewer restart   # stop + start — how a plugin update reaches a running viewer
-bin/codeatlas-viewer stop
-bin/codeatlas-viewer paths     # PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG / STOP
-bin/codeatlas-viewer publish <draft> [--to <name>]
+scripts/codeatlas-viewer start     # installs deps on first run, starts vite on :5173, prints paths
+scripts/codeatlas-viewer status    # up/down + pid (exit 1 when down)
+scripts/codeatlas-viewer restart   # stop + start — how a plugin update reaches a running viewer
+scripts/codeatlas-viewer stop
+scripts/codeatlas-viewer paths     # PLUGIN_ROOT / LIVE_DIR / VALIDATOR / THEME_CSS / URL / LOG / STOP
+scripts/codeatlas-viewer publish <draft> [--to <name>]
                                # validate a staged graph (a path, or <name> for LIVE_DIR/<name>.json)
                                # and rename it over LIVE_DIR/graph.json in one step; an invalid
                                # draft exits 1 with the errors and nothing changes on screen
 ```
 
-On Windows use `bin\codeatlas-viewer.cmd` (or the shell shim under Git Bash / WSL).
+On Windows use `scripts\codeatlas-viewer.cmd` (or the shell shim under Git Bash / WSL).
 
 A running viewer never reloads its `node_modules`, so after a plugin update it keeps
 serving the packages it started with. `start` and `status` notice and print a NOTE;
@@ -217,7 +217,7 @@ in [`docs/schema-import/`](schema-import/) to produce a JSON catalog and feed th
 [`docs/schema-import.md`](schema-import.md). Tables, columns, indexes, triggers and foreign
 keys become a nested graph; 10,000 tables import in about two seconds.
 
-Publish either one by writing it into the live directory (`bin/codeatlas-viewer paths`
+Publish either one by writing it into the live directory (`scripts/codeatlas-viewer paths`
 prints `LIVE_DIR`) as `graph.json`.
 
 ---
@@ -311,8 +311,8 @@ launchctl print gui/$(id -u)/com.codeatlas.viewer | grep -E 'state|pid'
 | `Node.js >= 20 required` | install a current Node; the launcher needs ≥ 20 |
 | the viewer is still running after I uninstalled the plugin | it stops itself within about a minute of the plugin disappearing. To stop it now, run the `STOP=` script `codeatlas-viewer paths` printed (it lives in `~/.codeatlas/` and keeps working after the plugin is gone) |
 | `WARNING — … dependencies are STALE` | an update could not be applied (no network, or a cold npm cache), so the previous install was kept and the viewer is running older packages than the plugin expects. It still starts; `status` keeps warning until you re-run `codeatlas-viewer install` with the network available |
-| Port already in use | `CODEATLAS_PORT=<other> bin/codeatlas-viewer start` |
-| Viewer says "waiting for live/graph.json…" | nothing published yet — ask Claude a question, or write a graph into `LIVE_DIR` (`bin/codeatlas-viewer paths`) |
+| Port already in use | `CODEATLAS_PORT=<other> scripts/codeatlas-viewer start` |
+| Viewer says "waiting for live/graph.json…" | nothing published yet — ask Claude a question, or write a graph into `LIVE_DIR` (`scripts/codeatlas-viewer paths`) |
 | Status bar shows a red poll error | the published file is invalid; the last good graph stays on screen. Run `node schema/validate.mjs <file>` and fix what it lists |
 | Graph didn't update | check the status bar (source file and counts); confirm you wrote to the `LIVE_DIR` the launcher prints, not the repo's `viewer/public/live/` |
 | "Open in editor" says `cannot resolve to an existing file` | usually a missing file, or a loc outside the root the graph names (`attrs.absRoot`). Add the directory to `CODEATLAS_ROOTS` if the graph has no root. System paths are refused by design |

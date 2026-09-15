@@ -50,7 +50,7 @@ try {
   if (e?.code !== "ERR_MODULE_NOT_FOUND") throw e;
   const msg =
     `codeatlas: the validator's dependency "ajv" is not installed — run ` +
-    `\`node ${join(here, "..", "bin", "codeatlas-viewer.mjs")} install\` ` +
+    `\`node ${join(here, "..", "scripts", "codeatlas-viewer.mjs")} install\` ` +
     `(or \`npm install\` in ${here})`;
   if (isCli) { console.error(msg); process.exit(2); }
   throw new Error(msg);

@@ -140,9 +140,9 @@ jobs:
           exit $fail
       - name: Launcher shims are executable and LF where they must be
         run: |
-          test -x bin/codeatlas-viewer || { echo "::error::bin/codeatlas-viewer is not executable"; exit 1; }
-          file bin/codeatlas-viewer | grep -q CRLF && { echo "::error::POSIX shim has CRLF line endings"; exit 1; }
-          node bin/codeatlas-viewer.mjs paths > /dev/null
+          test -x scripts/codeatlas-viewer || { echo "::error::scripts/codeatlas-viewer is not executable"; exit 1; }
+          file scripts/codeatlas-viewer | grep -q CRLF && { echo "::error::POSIX shim has CRLF line endings"; exit 1; }
+          node scripts/codeatlas-viewer.mjs paths > /dev/null
 
   windows-shim:
     name: windows (.cmd shim + line endings)
@@ -156,13 +156,13 @@ jobs:
       - name: Shims survived the checkout with the right line endings
         shell: pwsh
         run: |
-          $sh = [IO.File]::ReadAllText("bin/codeatlas-viewer")
-          if ($sh.Contains("`r`n")) { throw "bin/codeatlas-viewer must be LF (see .gitattributes)" }
-          $cmd = [IO.File]::ReadAllText("bin/codeatlas-viewer.cmd")
-          if (-not $cmd.Contains("`r`n")) { throw "bin/codeatlas-viewer.cmd must be CRLF" }
+          $sh = [IO.File]::ReadAllText("scripts/codeatlas-viewer")
+          if ($sh.Contains("`r`n")) { throw "scripts/codeatlas-viewer must be LF (see .gitattributes)" }
+          $cmd = [IO.File]::ReadAllText("scripts/codeatlas-viewer.cmd")
+          if (-not $cmd.Contains("`r`n")) { throw "scripts/codeatlas-viewer.cmd must be CRLF" }
       - name: the .cmd shim runs
         shell: cmd
-        run: bin\codeatlas-viewer.cmd paths
+        run: scripts\codeatlas-viewer.cmd paths
 
   audit:
     name: audit (production dependencies)
@@ -173,7 +173,7 @@ jobs:
         with:
           node-version: 22
       # These lockfiles are not a build detail: the launcher reproduces them verbatim with
-      # `npm ci --omit=dev` on every user's machine (bin/codeatlas-viewer.mjs), so an advisory
+      # `npm ci --omit=dev` on every user's machine (scripts/codeatlas-viewer.mjs), so an advisory
       # in one ships until someone refreshes it. --omit=dev audits the tree a USER ends up running,
       # which is why vite and @vitejs/plugin-react are dependencies of viewer/ and not
       # devDependencies — the daemon we ship is vite. `npm audit` reads the lockfile, so
