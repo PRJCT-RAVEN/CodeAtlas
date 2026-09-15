@@ -10,7 +10,9 @@ one step — the `codeatlas` skill's step 3 — and is the ONLY supported way to
 `graph.json`; on
 a Windows shell without Git Bash use `"${CLAUDE_PLUGIN_ROOT}\scripts\codeatlas-viewer.cmd"`, or
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer.mjs"` anywhere). Keep the quotes: the
-plugin path contains a space on most Windows machines. Then
+plugin path contains a space on most Windows machines. Use the Bash tool for it even where
+PowerShell is the primary shell: Claude Code's Bash tool is Git Bash on Windows, so the POSIX
+shim runs there, and a PowerShell attempt first only costs the user a permission prompt. Then
 report the result in one or two lines: URL, whether it was already up, and the LIVE_DIR
 where graphs go. The viewer answers on `http://localhost:<port>`, `http://127.0.0.1:<port>`
 and `http://[::1]:<port>` — use whichever the user's tooling needs; it is loopback-only and

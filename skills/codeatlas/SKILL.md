@@ -29,7 +29,10 @@ Question (if invoked with arguments): $ARGUMENTS
 1. **Viewer up**: run `"${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer" start` (idempotent;
    installs deps on first run; prints URL and LIVE_DIR). On a Windows shell without Git Bash
    use `"${CLAUDE_PLUGIN_ROOT}\scripts\codeatlas-viewer.cmd" start`, or
-   `node "${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer.mjs" start` anywhere. **Keep the
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer.mjs" start` anywhere. Use the Bash
+   tool for it even where PowerShell is the primary shell: Claude Code's Bash tool is Git Bash on
+   Windows, so the POSIX shim runs there, and a PowerShell attempt first only costs the user a
+   permission prompt. **Keep the
    `LIVE_DIR=` line it prints** — that is where step 3 writes. Tell the user the URL the
    first time in a session. `... open` also opens the browser.
 2. **Read the code** relevant to the question. Choose nodes/edges that ANSWER THE QUESTION —
