@@ -140,6 +140,18 @@ test("an edge's multiplicity is count ?? locs.length — the number the viewer d
   assert.equal(JSON.parse(run(locsOnly(3), asCount, "--json").out).summary.changed, false);
 });
 
+test("inputs with a UTF-8 BOM are read — PowerShell 5.1 writes one, and the validator already accepts it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "irdiff-bom-"));
+  const a = join(dir, "old.json");
+  const b = join(dir, "new.json");
+  writeFileSync(a, "\uFEFF" + JSON.stringify(OLD));
+  writeFileSync(b, "\uFEFF" + JSON.stringify(NEW));
+  const r = spawnSync("node", [IRDIFF, a, b, "--json"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).old, a);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("unreadable / non-JSON file → exit 1; usage → exit 2", () => {
   const bad = run("{oops", OLD);
   assert.equal(bad.code, 1);

@@ -739,7 +739,10 @@ async function publish(argv) {
   if (resolve(draft).toLowerCase() === resolve(target).toLowerCase()) die(`${draft} already is the live file; stage the draft under another name`, 2);
   let doc;
   try {
-    doc = JSON.parse(readFileSync(draft, "utf8"));
+    // A UTF-8 BOM is stripped, as the validator strips it: Windows PowerShell 5.1 writes one
+    // for `Set-Content -Encoding utf8` and `Out-File`, and a draft the validator called VALID
+    // was then refused here as "not JSON".
+    doc = JSON.parse(readFileSync(draft, "utf8").replace(/^\uFEFF/, ""));
   } catch (e) {
     die(`${draft} is not JSON (${e.message}) — left in place, nothing published`);
   }

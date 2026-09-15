@@ -122,7 +122,7 @@ function main(argv) {
   if (files.length !== 2) { usage(); return 2; }
   const docs = [];
   for (const f of files) {
-    try { docs.push(JSON.parse(readFileSync(f, "utf8"))); }
+    try { docs.push(JSON.parse(readFileSync(f, "utf8").replace(/^\uFEFF/, ""))); } // BOM: PowerShell 5.1 writes one
     catch (e) { console.error(`irdiff: cannot read ${f}: ${e.message}`); return 1; }
   }
   const diff = diffIr(docs[0], docs[1]);

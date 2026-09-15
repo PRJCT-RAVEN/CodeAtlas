@@ -447,7 +447,7 @@ test("a dependency change under a running viewer is reported, and `restart` appl
 // The shims are what the skills actually invoke (`${CLAUDE_PLUGIN_ROOT}/scripts/codeatlas-viewer`),
 // and nothing in the repo ever ran one: a lost exec bit or a broken line would have shipped
 // green. macOS/Linux runs the sh shim for real; the .cmd is checked byte-wise everywhere.
-test("the POSIX shim runs the launcher", { skip: process.platform === "win32" }, async () => {
+test("the POSIX shim runs the launcher", { skip: process.platform === "win32" && "the POSIX shim needs sh; Windows runs the .cmd shim" }, async () => {
   const data = mkdtempSync(join(tmpdir(), "codeatlas-shim-"));
   const port = await freePort();
   const r = spawnSync(join(ROOT, "scripts", "codeatlas-viewer"), ["paths"], {
@@ -462,7 +462,7 @@ test("the POSIX shim runs the launcher", { skip: process.platform === "win32" },
 // The shim used to PREPEND ~/.local/bin:/opt/homebrew/bin:/usr/local/bin, which demotes a
 // version-managed node (nvm, fnm, volta, asdf all sit early in PATH) to whatever stale
 // binary those dirs still hold — reported as "Node.js >= 20 required, found v16".
-test("the POSIX shim does not demote the node already on PATH", { skip: process.platform === "win32" }, async () => {
+test("the POSIX shim does not demote the node already on PATH", { skip: process.platform === "win32" && "the POSIX shim needs sh; Windows runs the .cmd shim" }, async () => {
   const home = mkdtempSync(join(tmpdir(), "codeatlas-fakehome-"));
   const shadowDir = join(home, ".local", "bin");
   mkdirSync(shadowDir, { recursive: true });
@@ -518,7 +518,7 @@ function scriptCopy(name, dest) {
 // and so is one that has been moved — every path out of the script was then non-zero, i.e.
 // a process spawn and a log line every ThrottleInterval, forever.
 // (POSIX only: serve.sh is the launchd/nohup path, and Windows never runs it.)
-test("serve.sh exits 0 when it cannot read the checkout", { skip: process.platform === "win32" }, async () => {
+test("serve.sh exits 0 when it cannot read the checkout", { skip: process.platform === "win32" && "serve.sh is a POSIX script; Windows runs the launcher" }, async () => {
   const home = mkdtempSync(join(tmpdir(), "codeatlas-servehome-"));
   const script = join(home, "fake-checkout", "tools", "serve.sh");
   // there is no viewer/ next to it — the same symptom TCC produces
@@ -537,7 +537,7 @@ test("serve.sh exits 0 when it cannot read the checkout", { skip: process.platfo
 
 // Installing the agent from a TCC-protected folder produced one that could never work.
 // The stub PATH keeps this test away from the real launchd no matter what the script does.
-test("install-launchd.sh refuses a TCC-protected checkout unless forced", { skip: process.platform !== "darwin" }, () => {
+test("install-launchd.sh refuses a TCC-protected checkout unless forced", { skip: process.platform !== "darwin" && "launchd is macOS-only" }, () => {
   const home = mkdtempSync(join(tmpdir(), "codeatlas-tcchome-"));
   const stubs = join(home, "stub-bin");
   mkdirSync(stubs, { recursive: true });
@@ -580,7 +580,7 @@ test("install-launchd.sh refuses a TCC-protected checkout unless forced", { skip
 // could never start and said nothing about why (found 2026-09-10). `|` broke sed outright
 // and truncated the destination. plutil here is the REAL one — the escaping is half of
 // what is under test, and a plist with a raw `&` in a <string> is not valid XML.
-test("install-launchd.sh survives a checkout path with & < > | and a quote", { skip: process.platform !== "darwin" }, () => {
+test("install-launchd.sh survives a checkout path with & < > | and a quote", { skip: process.platform !== "darwin" && "launchd is macOS-only" }, () => {
   const home = mkdtempSync(join(tmpdir(), "codeatlas-metahome-"));
   const stubs = join(home, "stub-bin");
   mkdirSync(stubs, { recursive: true });
@@ -636,6 +636,18 @@ test("publish: a valid draft is validated, then renamed over the live graph; --t
   assert.ok(existsSync(join(live, "order-pipeline.json")));
   assert.ok(!existsSync(join(live, "op.json")));
   assert.match(r.stdout, /URL=http:\/\/localhost:\d+\/\?graph=order-pipeline/);
+  rmSync(data, { recursive: true, force: true });
+});
+
+test("publish: a draft with a UTF-8 BOM is published — PowerShell 5.1 writes one, and the validator already accepts it", () => {
+  const data = mkdtempSync(join(tmpdir(), "codeatlas-publish-bom-"));
+  const live = join(data, "live");
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(live, "bom.json"), "\uFEFF" + readFileSync(SHOWCASE, "utf8"));
+  const r = run(["publish", "bom"], { CODEATLAS_DATA: data });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /published .*graph\.json \(18 nodes, 34 edges, VALID\)/);
+  assert.ok(!existsSync(join(live, "bom.json")), "the draft is consumed by the rename");
   rmSync(data, { recursive: true, force: true });
 });
 

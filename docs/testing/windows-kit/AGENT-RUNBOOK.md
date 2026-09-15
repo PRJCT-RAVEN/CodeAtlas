@@ -55,9 +55,10 @@ cd schema;  npm test;                        cd ..
 cd tools;   npm test;                        cd ..
 ```
 
-Expected on the 0.3.x line: viewer 297 pass / 1 skip, schema 42 pass, tools 65 with ~11 skips on
-a box without Developer Mode (each skip names why). The counts move with the tree; what must not
-move is "0 fail".
+Expected on the 0.3.x line, on a box without Developer Mode (measured 2026-09-14): viewer
+296 pass / 2 skip, schema 41 pass / 1 skip, tools 67 pass+skip with 10 skips (each skip names
+why; vitest shows no reason for `skipIf`, so the viewer skips are the two symlink tests). The
+counts move with the tree; what must not move is "0 fail".
 
 ### B. Launcher through the shim
 
